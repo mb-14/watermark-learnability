@@ -3,7 +3,7 @@
 # Idempotent: safe to re-run when the persistent /workspace already has the repo.
 #
 # Installs requirements-legacy.txt (custom transformers fork + older accelerate/datasets).
-# Does not upgrade/downgrade the image torch — keeps the CUDA torch shipped with the image.
+# Keeps the image's torch: constraints file pins the currently-installed torch build.
 set -euo pipefail
 
 REPO_URL=${REPO_URL:-https://github.com/mb-14/watermark-learnability.git}
@@ -30,9 +30,59 @@ fi
 
 cd "${WORK}"
 pip install --upgrade pip
-# Paper-era HF stack (fork). Torch stays whatever the RunPod image provides.
-# Force reinstall pins so a previous bad install (e.g. pyarrow 25) cannot stick.
-pip install --upgrade --force-reinstall -r requirements-legacy.txt
+
+# If a previous broken legacy install yanked image torch, restore a CUDA 12.4 build
+# matching runpod/pytorch:2.4.0-*-cuda12.4.*. Otherwise keep whatever is installed.
+python - <<'PY'
+import importlib.util
+import subprocess
+import sys
+
+spec = importlib.util.find_spec("torch")
+need_restore = False
+if spec is None:
+    need_restore = True
+    print("torch missing; will restore torch==2.4.0+cu124")
+else:
+    import torch
+    ver = torch.__version__
+    print(f"found torch {ver} cuda={getattr(torch.version, 'cuda', None)}")
+    # Force-reinstall previously pulled torch 2.13 / cu13; reject that.
+    major_minor = tuple(int(x) for x in ver.split("+")[0].split(".")[:2])
+    cuda = getattr(torch.version, "cuda", None) or ""
+    if major_minor >= (2, 5) or cuda.startswith("13"):
+        need_restore = True
+        print(f"torch {ver} is too new / wrong CUDA for legacy A/B; restoring 2.4.0+cu124")
+
+if need_restore:
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install",
+        "torch==2.4.0", "torchaudio==2.4.0",
+        "--index-url", "https://download.pytorch.org/whl/cu124",
+    ])
+PY
+
+# Pin torch/torchaudio so accelerate etc. cannot upgrade them.
+python - <<'PY'
+from pathlib import Path
+import importlib.metadata as md
+lines = []
+for pkg in ("torch", "torchaudio", "torchvision"):
+    try:
+        lines.append(f"{pkg}=={md.version(pkg)}")
+    except md.PackageNotFoundError:
+        pass
+Path("/tmp/legacy-torch-constraints.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
+print("constraints:", Path("/tmp/legacy-torch-constraints.txt").read_text().strip() or "<empty>")
+PY
+
+# Install legacy HF stack; do NOT force-reinstall (avoids yanking CUDA torch again).
+pip install -r requirements-legacy.txt \
+  --constraint /tmp/legacy-torch-constraints.txt \
+  --upgrade-strategy only-if-needed
+# HuggingFace-hub may leave a too-new fsspec that breaks datasets 2.13 globs.
+pip install 'fsspec>=2023.1.0,<2024.1.0' \
+  --constraint /tmp/legacy-torch-constraints.txt
 
 # Keep container alive for SSH even if training exits; log to a file.
 set +e
