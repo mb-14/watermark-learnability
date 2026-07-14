@@ -17,9 +17,13 @@ mkdir -p "${HF_HOME}" "${OUTPUT_DIR}" "${LOG_DIR}"
 if [[ ! -d "${WORK}/.git" ]]; then
   git clone --branch "${REPO_BRANCH}" --depth 1 "${REPO_URL}" "${WORK}"
 else
-  git -C "${WORK}" fetch --depth 1 origin "${REPO_BRANCH}" || true
-  git -C "${WORK}" checkout "${REPO_BRANCH}" || true
-  git -C "${WORK}" reset --hard "origin/${REPO_BRANCH}" || true
+  # Best-effort update; do not fail the job if the volume is temporarily full.
+  if ! git -C "${WORK}" fetch --depth 1 origin "${REPO_BRANCH}"; then
+    echo "Warning: git fetch failed (disk full or network). Continuing with existing checkout."
+  else
+    git -C "${WORK}" checkout "${REPO_BRANCH}" || true
+    git -C "${WORK}" reset --hard "origin/${REPO_BRANCH}" || true
+  fi
 fi
 
 cd "${WORK}"
