@@ -4,15 +4,17 @@ This repository contains code for the ICLR 2024 paper [On the Learnability of Wa
 
 ### Setup
 
-To install the necessary packages, first create a conda environment.
+To install the necessary packages, first create a conda environment (Python 3.11+).
 ```shell
 conda create -n <env_name> python=3.11
 conda activate <env_name>
 ```
-Then, install the required packages with 
+Install a CUDA-enabled PyTorch build for your platform (torch ≥ 2.4 recommended) from [pytorch.org](https://pytorch.org/get-started/locally/), then install the remaining packages with:
 ```shell
 pip install -r requirements.txt
 ```
+
+This uses stock Hugging Face `transformers` (4.51–4.x). A custom transformers fork is no longer required. For faster attention, the training scripts default to PyTorch SDPA; you can optionally install [`flash-attn`](https://github.com/Dao-AILab/flash-attention) and pass `--attn_implementation flash_attention_2`.
 
 ### Usage
 

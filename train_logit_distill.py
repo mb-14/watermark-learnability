@@ -23,7 +23,6 @@ https://huggingface.co/models?filter=text-generation
 """
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
-import functools
 import json
 import logging
 import math
@@ -31,12 +30,13 @@ import os
 import sys
 from dataclasses import dataclass, field
 from itertools import chain
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import datasets
 import evaluate
 import torch
 from datasets import load_dataset
+from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
 
 import transformers
 from transformers import (
@@ -50,13 +50,11 @@ from transformers import (
     Trainer,
     TrainingArguments,
     default_data_collator,
-    is_torch_tpu_available,
+    is_torch_xla_available,
     set_seed,
 )
 from transformers.testing_utils import CaptureLogger
-from transformers.trainer_pt_utils import get_module_class_from_name
-from transformers.trainer_utils import FSDPOption, get_last_checkpoint
-from transformers.utils import check_min_version, send_example_telemetry
+from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
 
 from watermarks.aar.aar_watermark import AarWatermark
@@ -65,7 +63,8 @@ from watermarks.kth.kth_watermark import KTHWatermark
 from watermarks.watermark_types import WatermarkType
 
 
-require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
+require_version("datasets>=3.0.0", "To fix: pip install -r requirements.txt")
+require_version("transformers>=4.51.0", "To fix: pip install -r requirements.txt")
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +120,12 @@ class ModelArguments:
         default="main",
         metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
     )
-    use_auth_token: bool = field(
-        default=False,
+    token: Optional[str] = field(
+        default=None,
         metadata={
             "help": (
-                "Will use the token generated when running `huggingface-cli login` (necessary to use this script "
-                "with private models)."
+                "Hugging Face token for private/gated models. If unset, uses the cached login from "
+                "`huggingface-cli login` / `hf auth login` when needed."
             )
         },
     )
@@ -138,6 +137,16 @@ class ModelArguments:
                 "dtype will be automatically derived from the model's weights."
             ),
             "choices": ["auto", "bfloat16", "float16", "float32"],
+        },
+    )
+    attn_implementation: Optional[str] = field(
+        default="sdpa",
+        metadata={
+            "help": (
+                "Attention backend to use when loading the model: `sdpa` (default), `flash_attention_2` "
+                "(requires flash-attn), `eager`, or None to use the model default."
+            ),
+            "choices": ["sdpa", "flash_attention_2", "eager"],
         },
     )
     low_cpu_mem_usage: bool = field(
@@ -206,6 +215,15 @@ class ModelArguments:
         default="simple_1",
         metadata={
             "help": "Seeding scheme to use for watermark. See kgw_watermarking for more details."
+        },
+    )
+    kgw_watermark_hash_key: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "KGW PRF hash_key / salt. If unset, uses the seeding-scheme default "
+                "(15485863 for simple_0/simple_1/simple_2)."
+            )
         },
     )
 
@@ -312,9 +330,7 @@ class WatermarkLogitsDistillTrainer(Trainer):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.teacher_model = teacher_model
-        self.teacher_model = self._fsdp_teacher_model(self.teacher_model)
-        self.teacher_model.eval()
+        self.teacher_model = self._prepare_teacher_model(teacher_model)
         self.watermarker = watermarker
         self.argmax_watermark = argmax_watermark
         if self.argmax_watermark:
@@ -322,7 +338,7 @@ class WatermarkLogitsDistillTrainer(Trainer):
         else:
             self.loss_fct = torch.nn.KLDivLoss(reduction="batchmean", log_target=True)
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
         Compute distillation loss.
 
@@ -331,7 +347,7 @@ class WatermarkLogitsDistillTrainer(Trainer):
         Subclass and override for custom behavior.
         """
         if "labels" in inputs:
-            labels = inputs.pop("labels")
+            inputs.pop("labels")
 
         outputs = model(**inputs)
 
@@ -339,7 +355,7 @@ class WatermarkLogitsDistillTrainer(Trainer):
         if self.args.past_index >= 0:
             self._past = outputs[self.args.past_index]
 
-        with torch.no_grad():
+        with torch.inference_mode():
             teacher_outputs = self.teacher_model(**inputs)
 
         # argmax watermark, use cross entropy loss against one-hot labels
@@ -365,7 +381,6 @@ class WatermarkLogitsDistillTrainer(Trainer):
             ) / outputs.logits.shape[1]
 
         return (loss, outputs) if return_outputs else loss
-    
 
     def _save(self, output_dir: Optional[str] = None, **kwargs):
         super()._save(output_dir=output_dir, **kwargs)
@@ -393,56 +408,33 @@ class WatermarkLogitsDistillTrainer(Trainer):
             self.save_model(output_dir, _internal_call=True)
         super()._save_checkpoint(*args, **kwargs)
 
-    def _fsdp_teacher_model(self, model):
-        if self.fsdp is not None:
-            # PyTorch FSDP!
-            from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
-            from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
-            from torch.distributed.fsdp.fully_sharded_data_parallel import MixedPrecision
-            from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, transformer_auto_wrap_policy
+    def _prepare_teacher_model(self, model: PreTrainedModel) -> PreTrainedModel:
+        """Freeze the teacher and shard it with the same Accelerator FSDP plugin as the student."""
+        model.requires_grad_(False)
+        model.eval()
 
-            if FSDPOption.OFFLOAD in self.args.fsdp:
-                cpu_offload = CPUOffload(offload_params=True)
-            else:
-                cpu_offload = CPUOffload(offload_params=False)
+        if not self.is_fsdp_enabled:
+            return model.to(self.args.device)
 
-            auto_wrap_policy = None
-            if FSDPOption.AUTO_WRAP in self.args.fsdp:
-                if self.args.fsdp_min_num_params > 0:
-                    auto_wrap_policy = functools.partial(
-                        size_based_auto_wrap_policy, min_num_params=self.args.fsdp_min_num_params
-                    )
-                elif self.args.fsdp_transformer_layer_cls_to_wrap is not None:
-                    transformer_cls_to_wrap = get_module_class_from_name(
-                        model, self.args.fsdp_transformer_layer_cls_to_wrap
-                    )
-                    if transformer_cls_to_wrap is None:
-                        raise Exception("Could not find the transformer layer class to wrap in the model.")
-                    auto_wrap_policy = functools.partial(
-                        transformer_auto_wrap_policy,
-                        # Transformer layer class to wrap
-                        transformer_layer_cls={transformer_cls_to_wrap},
-                    )
-            mixed_precision_policy = None
-            dtype = None
-            if self.args.fp16:
-                dtype = torch.float16
-            elif self.args.bf16:
-                dtype = torch.bfloat16
-            if dtype is not None:
-                mixed_precision_policy = MixedPrecision(param_dtype=dtype, reduce_dtype=dtype, buffer_dtype=dtype)
-            if type(model) != FSDP:
-                # XXX: Breaking the self.model convention but I see no way around it for now.
-                model = FSDP(
-                    model,
-                    sharding_strategy=self.fsdp,
-                    cpu_offload=cpu_offload,
-                    auto_wrap_policy=auto_wrap_policy,
-                    mixed_precision=mixed_precision_policy,
-                    device_id=self.args.device,
-                  )
+        # Mirror Accelerator.prepare_model FSDP wrapping without activation checkpointing on the teacher.
+        fsdp_plugin = self.accelerator.state.fsdp_plugin
+        fsdp_plugin.set_auto_wrap_policy(model)
+        model = FSDP(
+            model,
+            sharding_strategy=fsdp_plugin.sharding_strategy or fsdp_plugin.reshard_after_forward,
+            cpu_offload=fsdp_plugin.cpu_offload,
+            auto_wrap_policy=fsdp_plugin.auto_wrap_policy,
+            mixed_precision=fsdp_plugin.mixed_precision_policy,
+            sync_module_states=fsdp_plugin.sync_module_states,
+            backward_prefetch=fsdp_plugin.backward_prefetch,
+            forward_prefetch=fsdp_plugin.forward_prefetch,
+            use_orig_params=fsdp_plugin.use_orig_params,
+            limit_all_gathers=fsdp_plugin.limit_all_gathers,
+            device_id=self.accelerator.device,
+        )
+        model.eval()
         return model
-    
+
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -456,10 +448,6 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
-    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
-    # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_clm", model_args, data_args)
 
     # Setup logging
     logging.basicConfig(
@@ -519,7 +507,7 @@ def main():
             data_args.dataset_name,
             data_args.dataset_config_name,
             cache_dir=model_args.cache_dir,
-            use_auth_token=True if model_args.use_auth_token else None,
+            token=model_args.token,
             streaming=data_args.streaming,
         )
         # if "validation" not in raw_datasets.keys():
@@ -528,7 +516,7 @@ def main():
         #         data_args.dataset_config_name,
         #         split=f"train[:{data_args.validation_split_percentage}%]",
         #         cache_dir=model_args.cache_dir,
-        #         use_auth_token=True if model_args.use_auth_token else None,
+        #         token=model_args.token,
         #         streaming=data_args.streaming,
         #     )
         #     raw_datasets["train"] = load_dataset(
@@ -536,7 +524,7 @@ def main():
         #         data_args.dataset_config_name,
         #         split=f"train[{data_args.validation_split_percentage}%:]",
         #         cache_dir=model_args.cache_dir,
-        #         use_auth_token=True if model_args.use_auth_token else None,
+        #         token=model_args.token,
         #         streaming=data_args.streaming,
         #     )
     else:
@@ -558,7 +546,7 @@ def main():
             extension,
             data_files=data_files,
             cache_dir=model_args.cache_dir,
-            use_auth_token=True if model_args.use_auth_token else None,
+            token=model_args.token,
             **dataset_args,
         )
         # If no validation data is there, validation_split_percentage will be used to divide the dataset.
@@ -568,7 +556,7 @@ def main():
                 data_files=data_files,
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
+                token=model_args.token,
                 **dataset_args,
             )
             raw_datasets["train"] = load_dataset(
@@ -576,7 +564,7 @@ def main():
                 data_files=data_files,
                 split=f"train[{data_args.validation_split_percentage}%:]",
                 cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
+                token=model_args.token,
                 **dataset_args,
             )
 
@@ -592,7 +580,7 @@ def main():
     config_kwargs = {
         "cache_dir": model_args.cache_dir,
         "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
+        "token": model_args.token,
     }
     if model_args.config_name:
         config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
@@ -610,7 +598,7 @@ def main():
         "cache_dir": model_args.cache_dir,
         "use_fast": model_args.use_fast_tokenizer,
         "revision": model_args.model_revision,
-        "use_auth_token": True if model_args.use_auth_token else None,
+        "token": model_args.token,
     }
     if model_args.tokenizer_name:
         tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
@@ -622,43 +610,41 @@ def main():
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
+    model_load_kwargs: Dict[str, Any] = {
+        "config": config,
+        "cache_dir": model_args.cache_dir,
+        "revision": model_args.model_revision,
+        "token": model_args.token,
+        "low_cpu_mem_usage": model_args.low_cpu_mem_usage,
+    }
+    if model_args.attn_implementation is not None:
+        model_load_kwargs["attn_implementation"] = model_args.attn_implementation
+
     if model_args.model_name_or_path:
         torch_dtype = (
             model_args.torch_dtype
             if model_args.torch_dtype in ["auto", None]
             else getattr(torch, model_args.torch_dtype)
         )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-            torch_dtype=torch_dtype,
-            low_cpu_mem_usage=model_args.low_cpu_mem_usage,
-        )
-        teacher_model = AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-            torch_dtype=torch_dtype,
-            low_cpu_mem_usage=model_args.low_cpu_mem_usage,
-        )
+        model_load_kwargs["torch_dtype"] = torch_dtype
+        model_load_kwargs["from_tf"] = bool(".ckpt" in model_args.model_name_or_path)
+        model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path, **model_load_kwargs)
+        teacher_model = AutoModelForCausalLM.from_pretrained(model_args.model_name_or_path, **model_load_kwargs)
     else:
-        model = AutoModelForCausalLM.from_config(config)
-        teacher_model = AutoModelForCausalLM.from_config(config)
+        model = AutoModelForCausalLM.from_config(config, attn_implementation=model_args.attn_implementation)
+        teacher_model = AutoModelForCausalLM.from_config(config, attn_implementation=model_args.attn_implementation)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+
+    teacher_model.requires_grad_(False)
+    teacher_model.eval()
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
+        teacher_model.resize_token_embeddings(len(tokenizer))
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
@@ -822,6 +808,7 @@ def main():
             seeding_scheme=model_args.kgw_watermark_seeding_scheme,
             tokenizer=tokenizer,
             device=device,
+            hash_key=model_args.kgw_watermark_hash_key,
         )
         argmax_watermark = False
         assert not argmax_watermark, "KGW watermark only supports non-argmax watermarking"
@@ -830,9 +817,7 @@ def main():
     
     assert argmax_watermark is not None, "argmax_watermark must be set"
 
-    # Initialize our Trainer
-    teacher_model = teacher_model.to(device)
-
+    # Teacher device placement / FSDP wrap happens inside WatermarkLogitsDistillTrainer.
     trainer = WatermarkLogitsDistillTrainer(
         teacher_model=teacher_model,
         watermarker=watermarker,
@@ -841,12 +826,12 @@ def main():
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=default_data_collator,
-        compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
+        compute_metrics=compute_metrics if training_args.do_eval and not is_torch_xla_available() else None,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics
-        if training_args.do_eval and not is_torch_tpu_available()
+        if training_args.do_eval and not is_torch_xla_available()
         else None,
     )
 

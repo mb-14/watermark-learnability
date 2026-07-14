@@ -79,6 +79,7 @@ for wc in tqdm(watermark_configs_list):
             gamma=wc["gamma"],
             seeding_scheme=wc["seeding_scheme"],
             normalizers=[],
+            hash_key=wc.get("hash_key"),
         )
         watermark_name = f"kgw-{wc['seeding_scheme']}-gamma{wc['gamma']}"
     scores = []

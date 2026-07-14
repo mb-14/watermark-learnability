@@ -1,12 +1,18 @@
-accelerate
+# Install a CUDA-enabled PyTorch build separately for your platform:
+#   https://pytorch.org/get-started/locally/
+# Expected: torch>=2.4 with CUDA.
+
+accelerate>=1.4.0,<2.0
 Cython
-datasets
-evaluate
+datasets>=3.0.0,<5.0
+evaluate>=0.4.0
 numpy
 openai
 scikit-learn
 scipy
-torch
 tqdm
-transformers@git+https://github.com/chenchenygu/transformers-watermark-learnability
+transformers>=4.51.0,<5.0
 wandb
+
+# Optional: faster attention than SDPA when a compatible wheel is available.
+# flash-attn

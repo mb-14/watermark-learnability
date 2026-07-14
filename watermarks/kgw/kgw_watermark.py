@@ -16,6 +16,7 @@ class KGWWatermark:
         seeding_scheme: str = "simple_1",
         tokenizer: AutoTokenizer = None,
         device: Optional[str] = None,
+        hash_key: Optional[int] = None,
     ):
         self.type = WatermarkType.KGW
         self.watermark_base = WatermarkBase(
@@ -24,6 +25,7 @@ class KGWWatermark:
             delta=delta,
             seeding_scheme=seeding_scheme,
             device="cpu",  # cpu for reproducibility
+            hash_key=hash_key,
         )
         self.kgw_device = "cpu"
         self.k = self.watermark_base.context_width

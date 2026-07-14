@@ -38,6 +38,7 @@ class WatermarkBase:
         seeding_scheme: str = "simple_1",  # simple default, find more schemes in alternative_prf_schemes.py
         select_green_tokens: bool = True,  # should always be the default if not running in legacy mode
         device = None,
+        hash_key: int | None = None,  # override PRF salt; None keeps the seeding-scheme default
     ):
         # patch now that None could now maybe be passed as seeding_scheme
         if seeding_scheme is None:
@@ -54,14 +55,14 @@ class WatermarkBase:
         if device is not None:
             self.rng = torch.Generator(device=device)
         self.seeding_scheme = seeding_scheme
-        self._initialize_seeding_scheme(seeding_scheme)
+        self._initialize_seeding_scheme(seeding_scheme, hash_key=hash_key)
         # Legacy behavior:
         self.select_green_tokens = select_green_tokens
 
-    def _initialize_seeding_scheme(self, seeding_scheme: str) -> None:
+    def _initialize_seeding_scheme(self, seeding_scheme: str, hash_key: int | None = None) -> None:
         """Initialize all internal settings of the seeding strategy from a colloquial, "public" name for the scheme."""
         self.prf_type, self.context_width, self.self_salt, self.hash_key = seeding_scheme_lookup(
-            seeding_scheme
+            seeding_scheme, hash_key=hash_key
         )
 
     def _seed_rng(self, input_ids: torch.LongTensor) -> None:

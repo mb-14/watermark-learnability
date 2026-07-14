@@ -71,6 +71,7 @@ def compute_p_values(samples_dict, tokenizer, kgw_device, truncate=False, num_to
                 gamma=watermark_config["gamma"],
                 seeding_scheme=watermark_config["seeding_scheme"],
                 normalizers=[],
+                hash_key=watermark_config.get("hash_key"),
             )
         else:
             print(f"Skipping {model_name}, could not determine watermark type")

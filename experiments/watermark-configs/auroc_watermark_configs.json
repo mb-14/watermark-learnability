@@ -3,19 +3,22 @@
         "type": "kgw",
         "gamma": 0.25,
         "kgw_device": "cpu",
-        "seeding_scheme": "simple_0"
+        "seeding_scheme": "simple_0",
+        "hash_key": 15485863
     },
     {
         "type": "kgw",
         "gamma": 0.25,
         "kgw_device": "cpu",
-        "seeding_scheme": "simple_1"
+        "seeding_scheme": "simple_1",
+        "hash_key": 15485863
     },
     {
         "type": "kgw",
         "gamma": 0.25,
         "kgw_device": "cpu",
-        "seeding_scheme": "simple_2"
+        "seeding_scheme": "simple_2",
+        "hash_key": 15485863
     },
     {
         "type": "aar",

@@ -16,27 +16,32 @@ elif [ "$watermark" = "kgw-k0-gamma0.25-delta1" ]; then
     watermark_args="--watermark_type kgw \
     --kgw_watermark_gamma 0.25 \
     --kgw_watermark_delta 1.0 \
-    --kgw_watermark_seeding_scheme simple_0"
+    --kgw_watermark_seeding_scheme simple_0 \
+    --kgw_watermark_hash_key 15485863"
 elif [ "$watermark" = "kgw-k0-gamma0.25-delta2" ]; then
     watermark_args="--watermark_type kgw \
     --kgw_watermark_gamma 0.25 \
     --kgw_watermark_delta 2.0 \
-    --kgw_watermark_seeding_scheme simple_0"
+    --kgw_watermark_seeding_scheme simple_0 \
+    --kgw_watermark_hash_key 15485863"
 elif [ "$watermark" = "kgw-k1-gamma0.25-delta1" ]; then
     watermark_args="--watermark_type kgw \
     --kgw_watermark_gamma 0.25 \
     --kgw_watermark_delta 1.0 \
-    --kgw_watermark_seeding_scheme simple_1"
+    --kgw_watermark_seeding_scheme simple_1 \
+    --kgw_watermark_hash_key 15485863"
 elif [ "$watermark" = "kgw-k1-gamma0.25-delta2" ]; then
     watermark_args="--watermark_type kgw \
     --kgw_watermark_gamma 0.25 \
     --kgw_watermark_delta 2.0 \
-    --kgw_watermark_seeding_scheme simple_1"
+    --kgw_watermark_seeding_scheme simple_1 \
+    --kgw_watermark_hash_key 15485863"
 elif [ "$watermark" = "kgw-k2-gamma0.25-delta2" ]; then
     watermark_args="--watermark_type kgw \
     --kgw_watermark_gamma 0.25 \
     --kgw_watermark_delta 2.0 \
-    --kgw_watermark_seeding_scheme simple_2"
+    --kgw_watermark_seeding_scheme simple_2 \
+    --kgw_watermark_hash_key 15485863"
 elif [ "$watermark" = "kth-shift1" ]; then
     watermark_args="--watermark_type kth \
     --kth_watermark_key_len 256 \
@@ -66,6 +71,11 @@ else
     block_size=512
 fi
 
+# Optional: set TORCH_COMPILE=True to enable torch.compile (may increase step latency on first run).
+torch_compile=${TORCH_COMPILE:-False}
+# Optional: set ATTN_IMPLEMENTATION=flash_attention_2 if flash-attn is installed.
+attn_implementation=${ATTN_IMPLEMENTATION:-sdpa}
+
 torchrun --nproc_per_node=4 --master_port=${port} train_logit_distill.py \
     --model_name_or_path "${llama}" \
     --dataset_name Skylion007/openwebtext \
@@ -84,8 +94,13 @@ torchrun --nproc_per_node=4 --master_port=${port} train_logit_distill.py \
     --save_total_limit 1 \
     --tf32 True \
     --bf16 True \
+    --torch_dtype bfloat16 \
+    --attn_implementation "${attn_implementation}" \
+    --torch_compile ${torch_compile} \
     --gradient_checkpointing True \
+    --dataloader_num_workers 4 \
+    --dataloader_pin_memory True \
     ${watermark_args} \
     --watermark_seed 42 \
     --fsdp "full_shard auto_wrap" \
-    --fsdp_transformer_layer_cls_to_wrap "LlamaDecoderLayer"
+    --fsdp_config '{"transformer_layer_cls_to_wrap": ["LlamaDecoderLayer"]}'

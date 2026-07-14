@@ -198,6 +198,7 @@ elif watermark_config["type"] == WatermarkType.KGW:
         delta=watermark_config["delta"],
         seeding_scheme=watermark_config["seeding_scheme"],
         device=device,
+        hash_key=watermark_config.get("hash_key"),
     )
     do_sample = True
 elif watermark_config["type"] == WatermarkType.KTH:

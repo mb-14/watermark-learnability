@@ -4,7 +4,7 @@ This subdirectory contains scripts for training using logit-based and sampling-b
 
 ### Logit-based watermark distillation
 
-[`train_llama_logit_distill.sh`](train_llama_logit_distill.sh) runs logit-based watermark distillation on Llama 2 7B. The training configuration is for 4 NVIDIA A100 80GB GPUs. The script is run from the top-level directory as
+[`train_llama_logit_distill.sh`](train_llama_logit_distill.sh) runs logit-based watermark distillation on Llama 2 7B. The training configuration is for 4 NVIDIA A100 80GB GPUs (FSDP full shard, bf16, SDPA attention). The script is run from the top-level directory as
 ```
 bash scripts/train/train_llama_logit_distill.sh <watermark_type> <output_dir/> <master_port> <llama_path>
 ```
@@ -12,6 +12,14 @@ bash scripts/train/train_llama_logit_distill.sh <watermark_type> <output_dir/> <
 - `output_dir` specifies the directory where the model should be stored (with the trailing `/`). This should not include the model name itself, which is automatically computed by the script.
 - `master_port` is the port that is passed to `torchrun`. This can be more or less arbitrarily selected.
 - `llama_path` (optional) specifies the path where the base Llama 2 7B model weights are loaded from. Defaults to [`meta-llama/Llama-2-7b-hf`](https://huggingface.co/meta-llama/Llama-2-7b-hf), which downloads from Hugging Face.
+
+Optional environment overrides:
+- `ATTN_IMPLEMENTATION=flash_attention_2` — use FlashAttention 2 if [`flash-attn`](https://github.com/Dao-AILab/flash-attention) is installed (default: `sdpa`).
+- `TORCH_COMPILE=True` — enable `torch.compile` via Hugging Face `TrainingArguments`.
+
+Modern flags already enabled in the script: `--torch_dtype bfloat16`, `--attn_implementation`, `--dataloader_num_workers 4`, `--dataloader_pin_memory True`, and `--fsdp_config` with `LlamaDecoderLayer` wrapping.
+
+For KGW runs, the script sets `--kgw_watermark_hash_key 15485863` (the default Kirchenbauer PRF salt). Override that flag to train against a different KGW key.
 
 ### Sampling-based watermark distillation
 
