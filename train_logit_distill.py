@@ -357,12 +357,14 @@ class WatermarkLogitsDistillTrainer(Trainer):
 
         with torch.inference_mode():
             teacher_outputs = self.teacher_model(**inputs)
+        # Clone out of InferenceMode: KGW watermark_logits does inplace += on logits.
+        teacher_logits = teacher_outputs.logits.clone()
 
         # argmax watermark, use cross entropy loss against one-hot labels
         if self.argmax_watermark:
             watermark_tokens = self.watermarker.watermark_logits_argmax(
                 inputs["input_ids"],
-                teacher_outputs.logits,
+                teacher_logits,
             )
 
             # compute cross entropy loss
@@ -372,7 +374,7 @@ class WatermarkLogitsDistillTrainer(Trainer):
             )
         else:  # if not argmax, do distillation against distorted distribution
             # get watermarked logits
-            watermarked_logits = self.watermarker.watermark_logits(inputs["input_ids"], teacher_outputs.logits)
+            watermarked_logits = self.watermarker.watermark_logits(inputs["input_ids"], teacher_logits)
 
             # compute distillation loss
             loss = self.loss_fct(

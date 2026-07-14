@@ -69,6 +69,8 @@ class KGWWatermark:
         logits: torch.FloatTensor,  # (batch, seq_len, vocab_size)
     ) -> torch.FloatTensor:
         """Returns watermarked logits to be used as distillation target."""
+        # Clone so inplace greenlist boosts are safe under InferenceMode teacher logits.
+        logits = logits.clone()
         hashes = torch.sum(input_ids.unfold(-1, self.k, 1), dim=-1)  # (batch, seq_len - k + 1)
         mask = self.greenlist_masks[hashes]  # (batch, seq_len - k + 1, vocab_size)
         # tokenizer vocab size and model outputs vocab size may be different
