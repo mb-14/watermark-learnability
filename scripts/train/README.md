@@ -16,10 +16,13 @@ bash scripts/train/train_llama_logit_distill.sh <watermark_type> <output_dir/> <
 Optional environment overrides:
 - `ATTN_IMPLEMENTATION=flash_attention_2` — use FlashAttention 2 if [`flash-attn`](https://github.com/Dao-AILab/flash-attention) is installed (default: `sdpa`).
 - `TORCH_COMPILE=True` — enable `torch.compile` via Hugging Face `TrainingArguments`.
+- `KGW_HASH_KEY=15485863` — KGW PRF salt (default `15485863`; included in the output dir name for KGW runs).
+- `NPROC_PER_NODE=4` — number of GPUs for `torchrun`.
+- `TRAIN_EXTRA_ARGS="--push_to_hub True --hub_model_id user/repo"` — extra CLI flags (Hub push, etc.).
 
 Modern flags already enabled in the script: `--torch_dtype bfloat16`, `--attn_implementation`, `--dataloader_num_workers 4`, `--dataloader_pin_memory True`, and `--fsdp_config` with `LlamaDecoderLayer` wrapping.
 
-For KGW runs, the script sets `--kgw_watermark_hash_key 15485863` (the default Kirchenbauer PRF salt). Override that flag to train against a different KGW key.
+For containerized / RunPod automation (hash-key sweeps + Hub upload), see [`docker/README.md`](/docker/README.md).
 
 ### Sampling-based watermark distillation
 

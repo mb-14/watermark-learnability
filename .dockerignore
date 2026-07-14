@@ -1,0 +1,16 @@
+.git
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/venv
+*.md
+!README.md
+!scripts/train/README.md
+experiments/**/*.json
+!experiments/watermark-configs/**
+.cursor
+.DS_Store

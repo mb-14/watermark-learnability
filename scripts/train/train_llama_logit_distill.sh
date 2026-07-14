@@ -1,63 +1,78 @@
 #!/bin/bash
+# Logit watermark distillation launcher (local or Docker / RunPod).
+#
+# Usage:
+#   bash scripts/train/train_llama_logit_distill.sh <watermark_type> <output_dir/> <master_port> [llama_path]
+#
+# Env overrides:
+#   NPROC_PER_NODE       default 4
+#   KGW_HASH_KEY         default 15485863 (KGW runs only)
+#   ATTN_IMPLEMENTATION  default sdpa
+#   TORCH_COMPILE        default False
+#   TRAIN_EXTRA_ARGS     extra flags appended to train_logit_distill.py (e.g. Hub push)
+set -euo pipefail
+
 watermark=$1
 out_dir=$2
 port=$3
 llama=${4:-"meta-llama/Llama-2-7b-hf"}
 
+nproc=${NPROC_PER_NODE:-4}
+kgw_hash_key=${KGW_HASH_KEY:-15485863}
+torch_compile=${TORCH_COMPILE:-False}
+attn_implementation=${ATTN_IMPLEMENTATION:-sdpa}
+
 model_name="llama-2-7b-logit-watermark-distill-${watermark}"
 
 if [ "$watermark" = "aar-k2" ]; then
-    watermark_args="--watermark_type aar --aar_watermark_k 2"
+    watermark_args=(--watermark_type aar --aar_watermark_k 2)
 elif [ "$watermark" = "aar-k3" ]; then
-    watermark_args="--watermark_type aar --aar_watermark_k 3"
+    watermark_args=(--watermark_type aar --aar_watermark_k 3)
 elif [ "$watermark" = "aar-k4" ]; then
-    watermark_args="--watermark_type aar --aar_watermark_k 4"
+    watermark_args=(--watermark_type aar --aar_watermark_k 4)
 elif [ "$watermark" = "kgw-k0-gamma0.25-delta1" ]; then
-    watermark_args="--watermark_type kgw \
-    --kgw_watermark_gamma 0.25 \
-    --kgw_watermark_delta 1.0 \
-    --kgw_watermark_seeding_scheme simple_0 \
-    --kgw_watermark_hash_key 15485863"
+    watermark_args=(--watermark_type kgw
+      --kgw_watermark_gamma 0.25
+      --kgw_watermark_delta 1.0
+      --kgw_watermark_seeding_scheme simple_0
+      --kgw_watermark_hash_key "${kgw_hash_key}")
+    model_name="${model_name}-hk${kgw_hash_key}"
 elif [ "$watermark" = "kgw-k0-gamma0.25-delta2" ]; then
-    watermark_args="--watermark_type kgw \
-    --kgw_watermark_gamma 0.25 \
-    --kgw_watermark_delta 2.0 \
-    --kgw_watermark_seeding_scheme simple_0 \
-    --kgw_watermark_hash_key 15485863"
+    watermark_args=(--watermark_type kgw
+      --kgw_watermark_gamma 0.25
+      --kgw_watermark_delta 2.0
+      --kgw_watermark_seeding_scheme simple_0
+      --kgw_watermark_hash_key "${kgw_hash_key}")
+    model_name="${model_name}-hk${kgw_hash_key}"
 elif [ "$watermark" = "kgw-k1-gamma0.25-delta1" ]; then
-    watermark_args="--watermark_type kgw \
-    --kgw_watermark_gamma 0.25 \
-    --kgw_watermark_delta 1.0 \
-    --kgw_watermark_seeding_scheme simple_1 \
-    --kgw_watermark_hash_key 15485863"
+    watermark_args=(--watermark_type kgw
+      --kgw_watermark_gamma 0.25
+      --kgw_watermark_delta 1.0
+      --kgw_watermark_seeding_scheme simple_1
+      --kgw_watermark_hash_key "${kgw_hash_key}")
+    model_name="${model_name}-hk${kgw_hash_key}"
 elif [ "$watermark" = "kgw-k1-gamma0.25-delta2" ]; then
-    watermark_args="--watermark_type kgw \
-    --kgw_watermark_gamma 0.25 \
-    --kgw_watermark_delta 2.0 \
-    --kgw_watermark_seeding_scheme simple_1 \
-    --kgw_watermark_hash_key 15485863"
+    watermark_args=(--watermark_type kgw
+      --kgw_watermark_gamma 0.25
+      --kgw_watermark_delta 2.0
+      --kgw_watermark_seeding_scheme simple_1
+      --kgw_watermark_hash_key "${kgw_hash_key}")
+    model_name="${model_name}-hk${kgw_hash_key}"
 elif [ "$watermark" = "kgw-k2-gamma0.25-delta2" ]; then
-    watermark_args="--watermark_type kgw \
-    --kgw_watermark_gamma 0.25 \
-    --kgw_watermark_delta 2.0 \
-    --kgw_watermark_seeding_scheme simple_2 \
-    --kgw_watermark_hash_key 15485863"
+    watermark_args=(--watermark_type kgw
+      --kgw_watermark_gamma 0.25
+      --kgw_watermark_delta 2.0
+      --kgw_watermark_seeding_scheme simple_2
+      --kgw_watermark_hash_key "${kgw_hash_key}")
+    model_name="${model_name}-hk${kgw_hash_key}"
 elif [ "$watermark" = "kth-shift1" ]; then
-    watermark_args="--watermark_type kth \
-    --kth_watermark_key_len 256 \
-    --kth_watermark_num_shifts 1"
+    watermark_args=(--watermark_type kth --kth_watermark_key_len 256 --kth_watermark_num_shifts 1)
 elif [ "$watermark" = "kth-shift2" ]; then
-    watermark_args="--watermark_type kth \
-    --kth_watermark_key_len 256 \
-    --kth_watermark_num_shifts 2"
+    watermark_args=(--watermark_type kth --kth_watermark_key_len 256 --kth_watermark_num_shifts 2)
 elif [ "$watermark" = "kth-shift4" ]; then
-    watermark_args="--watermark_type kth \
-    --kth_watermark_key_len 256 \
-    --kth_watermark_num_shifts 4"
+    watermark_args=(--watermark_type kth --kth_watermark_key_len 256 --kth_watermark_num_shifts 4)
 elif [ "$watermark" = "kth-shift256" ]; then
-    watermark_args="--watermark_type kth \
-    --kth_watermark_key_len 256 \
-    --kth_watermark_num_shifts 256"
+    watermark_args=(--watermark_type kth --kth_watermark_key_len 256 --kth_watermark_num_shifts 256)
 else
     echo "Unsupported watermark type ${watermark}."
     exit 1
@@ -71,12 +86,14 @@ else
     block_size=512
 fi
 
-# Optional: set TORCH_COMPILE=True to enable torch.compile (may increase step latency on first run).
-torch_compile=${TORCH_COMPILE:-False}
-# Optional: set ATTN_IMPLEMENTATION=flash_attention_2 if flash-attn is installed.
-attn_implementation=${ATTN_IMPLEMENTATION:-sdpa}
+# Optional extra args from Docker entrypoint (Hub push, max_steps overrides, etc.).
+# shellcheck disable=SC2206
+extra_args=()
+if [[ -n "${TRAIN_EXTRA_ARGS:-}" ]]; then
+  extra_args=(${TRAIN_EXTRA_ARGS})
+fi
 
-torchrun --nproc_per_node=4 --master_port=${port} train_logit_distill.py \
+torchrun --nproc_per_node="${nproc}" --master_port="${port}" train_logit_distill.py \
     --model_name_or_path "${llama}" \
     --dataset_name Skylion007/openwebtext \
     --streaming \
@@ -96,11 +113,12 @@ torchrun --nproc_per_node=4 --master_port=${port} train_logit_distill.py \
     --bf16 True \
     --torch_dtype bfloat16 \
     --attn_implementation "${attn_implementation}" \
-    --torch_compile ${torch_compile} \
+    --torch_compile "${torch_compile}" \
     --gradient_checkpointing True \
     --dataloader_num_workers 4 \
     --dataloader_pin_memory True \
-    ${watermark_args} \
+    "${watermark_args[@]}" \
     --watermark_seed 42 \
     --fsdp "full_shard auto_wrap" \
-    --fsdp_config '{"transformer_layer_cls_to_wrap": ["LlamaDecoderLayer"]}'
+    --fsdp_config '{"transformer_layer_cls_to_wrap": ["LlamaDecoderLayer"]}' \
+    "${extra_args[@]}"
