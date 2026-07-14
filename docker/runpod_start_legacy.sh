@@ -31,7 +31,8 @@ fi
 cd "${WORK}"
 pip install --upgrade pip
 # Paper-era HF stack (fork). Torch stays whatever the RunPod image provides.
-pip install -r requirements-legacy.txt
+# Force reinstall pins so a previous bad install (e.g. pyarrow 25) cannot stick.
+pip install --upgrade --force-reinstall -r requirements-legacy.txt
 
 # Keep container alive for SSH even if training exits; log to a file.
 set +e

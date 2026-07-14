@@ -1,17 +1,20 @@
 # Paper-era stack for reproducing cygu-style logit distillation.
-# Install against a CUDA PyTorch 2.0.x base image (see Dockerfile.legacy);
+# Install against a CUDA PyTorch image (see Dockerfile.legacy / runpod_start_legacy.sh);
 # do not also `pip install torch` here — use the image's torch.
 #
 # Transformers is Chenchen Gu's Llama-2–patched fork of ~v4.29.2:
 #   https://github.com/chenchenygu/transformers-watermark-learnability
+#
+# Pin pyarrow/numpy to versions compatible with datasets 2.13 (PyExtensionType).
 
 accelerate==0.21.0
 Cython
 datasets==2.13.1
 evaluate==0.4.0
 huggingface-hub==0.16.4
-numpy
+numpy>=1.24,<2.0
 openai
+pyarrow>=12.0.0,<15.0.0
 scikit-learn
 scipy
 sentencepiece

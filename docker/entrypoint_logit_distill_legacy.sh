@@ -67,18 +67,9 @@ cleanup_run_dir() {
   if [[ ! -d "${run_dir}" ]]; then
     return 0
   fi
-  echo "Cleaning prior-run artifacts under ${run_dir}"
-  shopt -s nullglob
-  for ckpt in "${run_dir}"/checkpoint-*; do
-    echo "  rm -rf ${ckpt}"
-    rm -rf "${ckpt}"
-  done
-  shopt -u nullglob
-  # Drop leftover Hub/local full model files from the old run if present.
-  rm -f "${run_dir}"/model.safetensors* "${run_dir}"/pytorch_model* \
-    "${run_dir}"/optimizer.pt "${run_dir}"/scheduler.pt \
-    "${run_dir}"/trainer_state.json "${run_dir}"/rng_state*.pth 2>/dev/null || true
-  du -sh "${run_dir}" 2>/dev/null || true
+  echo "Removing prior-run directory ${run_dir}"
+  # Full wipe: leftover full weights (no checkpoint-*) can still be ~25GB+.
+  rm -rf "${run_dir}"
 }
 
 if [[ "${WATERMARK_TYPE}" == kgw* ]]; then
@@ -159,7 +150,7 @@ fi
 export TRAIN_EXTRA_ARGS="${extra[*]:-}"
 
 echo "Starting LEGACY logit distill: watermark=${WATERMARK_TYPE} hash_key=${KGW_HASH_KEY} nproc=${NPROC_PER_NODE} push_to_hub=${PUSH_TO_HUB} out=${MODEL_OUT_DIR}"
-echo "Stack: transformers-watermark-learnability fork + torch 2.0.1 / accelerate 0.21"
+echo "Stack: transformers-watermark-learnability fork (~4.29.2) + accelerate 0.21 (image torch)"
 exec bash scripts/train/train_llama_logit_distill_legacy.sh \
   "${WATERMARK_TYPE}" \
   "${OUTPUT_DIR}" \
