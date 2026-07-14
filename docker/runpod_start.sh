@@ -30,9 +30,8 @@ cd "${WORK}"
 pip install --upgrade pip
 pip install -r requirements.txt
 pip install "huggingface_hub[cli]>=0.24.0"
-# Resume needs torch.load for optimizer/RNG; transformers requires >=2.6 for that path.
-# Keep failing soft so a slow/unavailable upgrade does not block training from model weights.
-pip install --upgrade "torch>=2.6.0" || echo "Warning: could not upgrade torch to >=2.6; resume may need the train script bypass."
+# Do not upgrade torch here: bumping past the image's torchvision breaks imports
+# (torchvision::nms). Resume uses a transformers torch.load bypass instead.
 
 # Keep container alive for SSH even if training exits; log to a file.
 set +e

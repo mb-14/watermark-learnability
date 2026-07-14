@@ -33,7 +33,6 @@ from itertools import chain
 from typing import Any, Dict, Optional, Union
 
 import datasets
-import evaluate
 import torch
 from datasets import load_dataset
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
@@ -773,6 +772,8 @@ def main():
                 # like past_key_values, but logits always come first
                 logits = logits[0]
             return logits.argmax(dim=-1)
+
+        import evaluate  # lazy: pulls torchvision via transformers pipelines
 
         metric = evaluate.load("accuracy")
 
