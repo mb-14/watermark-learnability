@@ -56,10 +56,16 @@ from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
 from transformers.utils import import_utils as _hf_import_utils
+import transformers.trainer as _hf_trainer
 
 # Resume loads optimizer/RNG via torch.load. New transformers versions refuse that on
-# torch<2.6 (CVE-2025-32434). Our checkpoints are self-written on the workspace volume.
-_hf_import_utils.check_torch_load_is_safe = lambda: None
+# torch<2.6 (CVE-2025-32434). Trainer keeps its own bound reference, so patch both.
+def _allow_torch_load_for_trusted_ckpt() -> None:
+    return None
+
+
+_hf_import_utils.check_torch_load_is_safe = _allow_torch_load_for_trusted_ckpt
+_hf_trainer.check_torch_load_is_safe = _allow_torch_load_for_trusted_ckpt
 
 from watermarks.aar.aar_watermark import AarWatermark
 from watermarks.kgw.kgw_watermark import KGWWatermark
