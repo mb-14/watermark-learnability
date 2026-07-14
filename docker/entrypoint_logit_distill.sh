@@ -11,6 +11,7 @@
 #   MODEL_NAME_OR_PATH  default meta-llama/Llama-2-7b-hf
 #   NPROC_PER_NODE   default 4
 #   HF_TOKEN or RUNPOD_SECRET_HF_TOKEN  Hugging Face token (gated Llama + Hub push)
+#   WANDB_API_KEY or RUNPOD_SECRET_WAND_API_KEY / RUNPOD_SECRET_WANDB_API_KEY
 #   HF_HUB_USER      default mbakshi1094 (used to build HUB_MODEL_ID if unset)
 #   PUSH_TO_HUB      true/false (default false)
 #   HUB_MODEL_ID     optional; default ${HF_HUB_USER}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}
@@ -37,8 +38,18 @@ HF_HUB_USER=${HF_HUB_USER:-mbakshi1094}
 
 # RunPod secrets are injected as RUNPOD_SECRET_<NAME>.
 HF_TOKEN="${HF_TOKEN:-${RUNPOD_SECRET_HF_TOKEN:-}}"
+# Secret name on this account is WAND (not WANDB); accept both spellings.
+WANDB_API_KEY="${WANDB_API_KEY:-${RUNPOD_SECRET_WAND_API_KEY:-${RUNPOD_SECRET_WANDB_API_KEY:-}}}"
 
 export KGW_HASH_KEY ATTN_IMPLEMENTATION TORCH_COMPILE NPROC_PER_NODE
+if [[ -n "${WANDB_API_KEY}" ]]; then
+  export WANDB_API_KEY
+  unset WANDB_DISABLED WANDB_MODE || true
+else
+  # Transformers auto-enables wandb when installed; skip login prompts headless.
+  export WANDB_DISABLED=true
+  export WANDB_MODE=disabled
+fi
 
 mkdir -p "${OUTPUT_DIR}" "${HF_HOME}"
 
@@ -63,7 +74,7 @@ if [[ "${PUSH_TO_HUB,,}" == "true" || "${PUSH_TO_HUB}" == "1" ]]; then
       HUB_MODEL_ID="${HF_HUB_USER}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}"
     fi
   fi
-  extra+=(--push_to_hub True --hub_model_id "${HUB_MODEL_ID}" --token "${HF_TOKEN}")
+  extra+=(--push_to_hub True --hub_model_id "${HUB_MODEL_ID}")
   if [[ "${HUB_PRIVATE_REPO,,}" == "true" || "${HUB_PRIVATE_REPO}" == "1" ]]; then
     extra+=(--hub_private_repo True)
   else
