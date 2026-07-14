@@ -16,6 +16,8 @@
 #   PUSH_TO_HUB      true/false (default false)
 #   HUB_MODEL_ID     optional; default ${HF_HUB_USER}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}
 #   HUB_PRIVATE_REPO true/false (default false)
+#   HUB_STRATEGY     end|every_save|checkpoint|... (default end; every_save previously crashed mid-push)
+#   RESUME_FROM_CHECKPOINT  path or true (optional; otherwise auto-detect last good ckpt)
 #   ATTN_IMPLEMENTATION  sdpa | flash_attention_2 (default sdpa)
 #   TORCH_COMPILE    True/False (default False)
 #   MAX_STEPS        override training steps
@@ -32,6 +34,7 @@ NPROC_PER_NODE=${NPROC_PER_NODE:-4}
 KGW_HASH_KEY=${KGW_HASH_KEY:-15485863}
 PUSH_TO_HUB=${PUSH_TO_HUB:-false}
 HUB_PRIVATE_REPO=${HUB_PRIVATE_REPO:-false}
+HUB_STRATEGY=${HUB_STRATEGY:-end}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
 TORCH_COMPILE=${TORCH_COMPILE:-False}
 HF_HUB_USER=${HF_HUB_USER:-mbakshi1094}
@@ -61,10 +64,32 @@ else
   echo "Warning: no HF_TOKEN or RUNPOD_SECRET_HF_TOKEN set; gated model download / Hub push may fail."
 fi
 
+# Drop incomplete checkpoints (e.g. died mid-save / mid Hub push) so get_last_checkpoint
+# resumes from the last trainable one (needs trainer_state.json).
+if [[ "${WATERMARK_TYPE}" == kgw* ]]; then
+  MODEL_OUT_DIR="${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}"
+else
+  MODEL_OUT_DIR="${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}"
+fi
+if [[ -d "${MODEL_OUT_DIR}" ]]; then
+  shopt -s nullglob
+  for ckpt in "${MODEL_OUT_DIR}"/checkpoint-*; do
+    if [[ -d "${ckpt}" && ! -f "${ckpt}/trainer_state.json" ]]; then
+      echo "Removing incomplete checkpoint (no trainer_state.json): ${ckpt}"
+      rm -rf "${ckpt}"
+    fi
+  done
+  shopt -u nullglob
+fi
+
 # Build optional Hub-push / step overrides as EXTRA_ARGS for the launch script.
 extra=()
 if [[ -n "${MAX_STEPS:-}" ]]; then
   extra+=(--max_steps "${MAX_STEPS}")
+fi
+if [[ -n "${RESUME_FROM_CHECKPOINT:-}" ]]; then
+  extra+=(--resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}")
+  echo "Resume from checkpoint: ${RESUME_FROM_CHECKPOINT}"
 fi
 if [[ "${PUSH_TO_HUB,,}" == "true" || "${PUSH_TO_HUB}" == "1" ]]; then
   if [[ -z "${HUB_MODEL_ID:-}" ]]; then
@@ -74,13 +99,13 @@ if [[ "${PUSH_TO_HUB,,}" == "true" || "${PUSH_TO_HUB}" == "1" ]]; then
       HUB_MODEL_ID="${HF_HUB_USER}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}"
     fi
   fi
-  extra+=(--push_to_hub True --hub_model_id "${HUB_MODEL_ID}")
+  extra+=(--push_to_hub True --hub_model_id "${HUB_MODEL_ID}" --hub_strategy "${HUB_STRATEGY}")
   if [[ "${HUB_PRIVATE_REPO,,}" == "true" || "${HUB_PRIVATE_REPO}" == "1" ]]; then
     extra+=(--hub_private_repo True)
   else
     extra+=(--hub_private_repo False)
   fi
-  echo "Hub push enabled: ${HUB_MODEL_ID}"
+  echo "Hub push enabled: ${HUB_MODEL_ID} (strategy=${HUB_STRATEGY})"
 fi
 # shellcheck disable=SC2206
 if [[ -n "${EXTRA_ARGS:-}" ]]; then
@@ -90,7 +115,7 @@ fi
 
 export TRAIN_EXTRA_ARGS="${extra[*]:-}"
 
-echo "Starting logit distill: watermark=${WATERMARK_TYPE} hash_key=${KGW_HASH_KEY} nproc=${NPROC_PER_NODE} push_to_hub=${PUSH_TO_HUB}"
+echo "Starting logit distill: watermark=${WATERMARK_TYPE} hash_key=${KGW_HASH_KEY} nproc=${NPROC_PER_NODE} push_to_hub=${PUSH_TO_HUB} out=${MODEL_OUT_DIR}"
 exec bash scripts/train/train_llama_logit_distill.sh \
   "${WATERMARK_TYPE}" \
   "${OUTPUT_DIR}" \
