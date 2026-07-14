@@ -5,15 +5,17 @@
 # Transformers is Chenchen Gu's Llama-2–patched fork of ~v4.29.2:
 #   https://github.com/chenchenygu/transformers-watermark-learnability
 #
-# Pins matter: datasets 2.13 breaks on fsspec>=~2024.6 (glob '**' rules)
-# and on pyarrow>=15 (PyExtensionType removed).
+# Pins matter:
+# - datasets 2.13 + fsspec>=2023.12.0 → ValueError on glob '**'
+#   (HF issue #6737); use fsspec 2023.9.2
+# - pyarrow>=15 removes PyExtensionType used by datasets 2.13
 
 accelerate==0.21.0
 Cython
 datasets==2.13.1
 evaluate==0.4.0
 huggingface-hub==0.16.4
-fsspec>=2023.1.0,<2024.1.0
+fsspec==2023.9.2
 numpy>=1.24,<2.0
 openai
 pyarrow>=12.0.0,<15.0.0

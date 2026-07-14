@@ -80,8 +80,8 @@ PY
 pip install -r requirements-legacy.txt \
   --constraint /tmp/legacy-torch-constraints.txt \
   --upgrade-strategy only-if-needed
-# HuggingFace-hub may leave a too-new fsspec that breaks datasets 2.13 globs.
-pip install 'fsspec>=2023.1.0,<2024.1.0' \
+# Force era fsspec: hub may leave >=2023.12 which breaks datasets 2.13 globs.
+pip install 'fsspec==2023.9.2' \
   --constraint /tmp/legacy-torch-constraints.txt
 
 # Keep container alive for SSH even if training exits; log to a file.
