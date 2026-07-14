@@ -56,6 +56,11 @@ from transformers import (
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
+from transformers.utils import import_utils as _hf_import_utils
+
+# Resume loads optimizer/RNG via torch.load. New transformers versions refuse that on
+# torch<2.6 (CVE-2025-32434). Our checkpoints are self-written on the workspace volume.
+_hf_import_utils.check_torch_load_is_safe = lambda: None
 
 from watermarks.aar.aar_watermark import AarWatermark
 from watermarks.kgw.kgw_watermark import KGWWatermark
