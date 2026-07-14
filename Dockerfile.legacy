@@ -1,0 +1,41 @@
+# Paper-era (legacy) stack for logit watermark distillation.
+# Uses the custom transformers fork + torch 2.0.1 / accelerate 0.21.
+#
+# Build:
+#   docker build -f Dockerfile.legacy -t watermark-logit-distill:legacy .
+#
+# Run example:
+#   docker run --gpus all --shm-size=64g \
+#     -e HF_TOKEN -e WATERMARK_TYPE=kgw-k1-gamma0.25-delta2 \
+#     -e KGW_HASH_KEY=12997009 -e PUSH_TO_HUB=true \
+#     -e NPROC_PER_NODE=4 \
+#     watermark-logit-distill:legacy
+
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/workspace/.cache/huggingface \
+    TORCH_HOME=/workspace/.cache/torch \
+    WORKDIR=/workspace/watermark-learnability
+
+WORKDIR ${WORKDIR}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        build-essential \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-legacy.txt .
+RUN pip install --upgrade pip && \
+    pip install -r requirements-legacy.txt
+
+COPY . .
+
+RUN chmod +x \
+      docker/entrypoint_logit_distill_legacy.sh \
+      scripts/train/train_llama_logit_distill_legacy.sh
+
+ENTRYPOINT ["/workspace/watermark-learnability/docker/entrypoint_logit_distill_legacy.sh"]

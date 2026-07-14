@@ -1,0 +1,20 @@
+# Paper-era stack for reproducing cygu-style logit distillation.
+# Install against a CUDA PyTorch 2.0.x base image (see Dockerfile.legacy);
+# do not also `pip install torch` here — use the image's torch.
+#
+# Transformers is Chenchen Gu's Llama-2–patched fork of ~v4.29.2:
+#   https://github.com/chenchenygu/transformers-watermark-learnability
+
+accelerate==0.21.0
+Cython
+datasets==2.13.1
+evaluate==0.4.0
+huggingface-hub==0.16.4
+numpy
+openai
+scikit-learn
+scipy
+sentencepiece
+tqdm
+transformers@git+https://github.com/chenchenygu/transformers-watermark-learnability
+wandb

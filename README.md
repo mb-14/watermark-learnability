@@ -14,7 +14,9 @@ Install a CUDA-enabled PyTorch build for your platform (torch ≥ 2.4 recommende
 pip install -r requirements.txt
 ```
 
-This uses stock Hugging Face `transformers` (4.51–4.x). A custom transformers fork is no longer required. For faster attention, the training scripts default to PyTorch SDPA; you can optionally install [`flash-attn`](https://github.com/Dao-AILab/flash-attention) and pass `--attn_implementation flash_attention_2`.
+This uses stock Hugging Face `transformers` (4.51–4.x). A custom transformers fork is no longer required for the default path. For faster attention, the training scripts default to PyTorch SDPA; you can optionally install [`flash-attn`](https://github.com/Dao-AILab/flash-attention) and pass `--attn_implementation flash_attention_2`.
+
+To reproduce the paper-era training stack (Chenchen Gu’s [transformers fork](https://github.com/chenchenygu/transformers-watermark-learnability) + torch 2.0.1), use `requirements-legacy.txt`, `train_logit_distill_legacy.py`, and `docker build -f Dockerfile.legacy …` — see [`docker/README.md`](docker/README.md#legacy-paper-era-stack).
 
 ### Usage
 

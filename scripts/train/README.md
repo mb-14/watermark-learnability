@@ -24,6 +24,11 @@ Modern flags already enabled in the script: `--torch_dtype bfloat16`, `--attn_im
 
 For containerized / RunPod automation (hash-key sweeps + Hub upload), see [`docker/README.md`](/docker/README.md).
 
+**Paper-era / legacy stack** (custom transformers fork, torch 2.0.1, no SDPA): use
+[`train_llama_logit_distill_legacy.sh`](train_llama_logit_distill_legacy.sh) with
+`requirements-legacy.txt`, or build `Dockerfile.legacy` (`watermark-logit-distill:legacy`).
+Output dirs and Hub ids get a `-legacy` suffix. Same `KGW_HASH_KEY` env override applies.
+
 ### Sampling-based watermark distillation
 
 To perform sampling-based watermark distillation, you can either use the training data we have uploaded to Hugging Face (listed in the top-level [README.md](/README.md#training-data-for-sampling-based-watermark-distillation)) or generate the training data yourself. `generate_sampling_distill_train_data.sh` generates watermarked samples from the teacher Llama 2 7B to use as training data. We used 1 NVIDIA A100 80GB GPU. The script is run from the top-level directory as

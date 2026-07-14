@@ -4,19 +4,31 @@ Build once, then launch multi-GPU logit distill runs with env vars (hash key, Hu
 
 Hub uploads default under [`mbakshi1094`](https://huggingface.co/mbakshi1094).
 
+There are **two images**:
+
+| Tag | Stack | When to use |
+|-----|-------|-------------|
+| `watermark-logit-distill:latest` | Stock HF ≥4.51, torch 2.5, SDPA | Default / modern path |
+| `watermark-logit-distill:legacy` | [Paper fork](https://github.com/chenchenygu/transformers-watermark-learnability) (~4.29.2 + Llama-2), torch 2.0.1, eager attn | Reproduce cygu-quality distilled models / A/B the stack |
+
+Legacy uses the same env vars (`WATERMARK_TYPE`, `KGW_HASH_KEY`, …) but writes checkpoints / Hub repos with a `-legacy` suffix so they do not overwrite modern runs.
+
 ## Build
 
 From the repo root:
 
 ```bash
 docker build -t watermark-logit-distill:latest .
+docker build -f Dockerfile.legacy -t watermark-logit-distill:legacy .
 ```
 
 Push to a registry if you use RunPod custom images:
 
 ```bash
 docker tag watermark-logit-distill:latest <registry>/watermark-logit-distill:latest
+docker tag watermark-logit-distill:legacy <registry>/watermark-logit-distill:legacy
 docker push <registry>/watermark-logit-distill:latest
+docker push <registry>/watermark-logit-distill:legacy
 ```
 
 ## Run locally (4 GPUs)
@@ -46,6 +58,27 @@ docker run --gpus all --shm-size=64g --rm \
 
 If `HUB_MODEL_ID` is unset, the entrypoint builds:
 `mbakshi1094/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}`.
+
+## Persistent storage (network volume)
+
+HF model cache and checkpoints should live on a **network volume** so pods can be deleted/recreated without re-downloading Llama.
+
+1. Create a volume in a DC that supports *both* network volumes and your GPU type:
+
+```bash
+runpodctl nv create --name watermark-hf-cache --size 200 --data-center-id US-CA-2
+```
+
+Existing volume from this setup: **`q15kkgopbh`** (`watermark-hf-cache`, 200GB, `US-CA-2`).
+
+2. Launch the pod **in that same DC** and attach the volume (not a disposable `volumeInGb` disk):
+
+```bash
+# via REST / console: networkVolumeId=q15kkgopbh, volumeMountPath=/workspace
+# HF_HOME=/workspace/.cache/huggingface
+```
+
+Network volumes are **DC-scoped**. If that DC has no A100 capacity, either wait/retry there or create another volume in a DC that currently has GPUs.
 
 ## Auth
 
@@ -87,3 +120,36 @@ With `PUSH_TO_HUB=true` and hash key `15485863`, the model lands at:
 `https://huggingface.co/mbakshi1094/llama-2-7b-logit-watermark-distill-kgw-k1-gamma0.25-delta2-hk15485863`
 
 Sweep hash keys by launching one pod (or one `docker run`) per `KGW_HASH_KEY`.
+
+## Legacy (paper-era) stack
+
+To train with the original custom transformers fork + torch 2.0.1 (for A/B vs the modern stack):
+
+```bash
+docker build -f Dockerfile.legacy -t watermark-logit-distill:legacy .
+
+docker run --gpus all --shm-size=64g --rm \
+  -e HF_TOKEN \
+  -e WATERMARK_TYPE=kgw-k1-gamma0.25-delta2 \
+  -e KGW_HASH_KEY=12997009 \
+  -e PUSH_TO_HUB=true \
+  -e NPROC_PER_NODE=4 \
+  -e OUTPUT_DIR=/workspace/out/ \
+  -v "$PWD/out:/workspace/out" \
+  watermark-logit-distill:legacy
+```
+
+Defaults:
+
+- Launcher: `scripts/train/train_llama_logit_distill_legacy.sh`
+- Train script: `train_logit_distill_legacy.py` (pre-modernize FSDP / no SDPA)
+- Checkpoint dir / Hub id: `…-hk${KGW_HASH_KEY}-legacy`
+
+Local (non-Docker) legacy install:
+
+```bash
+# use a CUDA torch 2.0.1 env matching the paper, then:
+pip install -r requirements-legacy.txt
+bash scripts/train/train_llama_logit_distill_legacy.sh \
+  kgw-k1-gamma0.25-delta2 out/ 29500
+```
