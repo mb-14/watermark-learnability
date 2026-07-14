@@ -29,6 +29,11 @@ else
 fi
 
 cd "${WORK}"
+# Hub push needs git-lfs (legacy transformers/huggingface_hub Repository path).
+if ! command -v git-lfs >/dev/null 2>&1; then
+  apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y git-lfs
+  git lfs install
+fi
 pip install --upgrade pip
 
 # If a previous broken legacy install yanked image torch, restore a CUDA 12.4 build
