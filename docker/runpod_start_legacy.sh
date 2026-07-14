@@ -55,12 +55,31 @@ else:
         print(f"torch {ver} is too new / wrong CUDA for legacy A/B; restoring 2.4.0+cu124")
 
 if need_restore:
+    # Drop leftover CUDA-13 nvidia-* wheels from a prior force-reinstall.
+    loose = subprocess.check_output(
+        [sys.executable, "-m", "pip", "freeze"], text=True
+    )
+    purge = [
+        line.split("==")[0]
+        for line in loose.splitlines()
+        if line.startswith("nvidia-") and ("cu13" in line or "cuda-toolkit==13" in line)
+    ]
+    purge += [line.split("==")[0] for line in loose.splitlines() if line.startswith("cuda-toolkit==13") or line.startswith("cuda-bindings==")]
+    # Also common leftover NCCL from torch 2.13.
+    for pkg in list(purge):
+        if "nccl" in pkg.lower() and "cu13" in pkg:
+            pass
+    if purge:
+        print("purging leftover CUDA13 pkgs:", purge)
+        subprocess.call([sys.executable, "-m", "pip", "uninstall", "-y", *purge])
     subprocess.check_call([
         sys.executable, "-m", "pip", "install",
         "torch==2.4.0", "torchaudio==2.4.0",
         "--index-url", "https://download.pytorch.org/whl/cu124",
     ])
 PY
+# Avoid NVLS multicast failures on some RunPod H100 machines (NCCL error 401).
+export NCCL_NVLS_ENABLE=${NCCL_NVLS_ENABLE:-0}
 
 # Pin torch/torchaudio so accelerate etc. cannot upgrade them.
 python - <<'PY'
