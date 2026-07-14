@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # Bootstrap logit distill on a stock RunPod PyTorch image (no custom registry needed).
+# Idempotent: safe to re-run when the persistent /workspace already has the repo.
 set -euo pipefail
 
 REPO_URL=${REPO_URL:-https://github.com/mb-14/watermark-learnability.git}
 REPO_BRANCH=${REPO_BRANCH:-modernize-logit-distill}
 WORK=/workspace/watermark-learnability
+LOG_DIR=${LOG_DIR:-/workspace/logs}
+LOG_FILE="${LOG_DIR}/logit_distill_${KGW_HASH_KEY:-nokey}_$(date -u +%Y%m%dT%H%M%SZ).log"
 
 export HF_HOME=${HF_HOME:-/workspace/.cache/huggingface}
 export TORCH_HOME=${TORCH_HOME:-/workspace/.cache/torch}
 export OUTPUT_DIR=${OUTPUT_DIR:-/workspace/out/}
-mkdir -p "${HF_HOME}" "${OUTPUT_DIR}"
+mkdir -p "${HF_HOME}" "${OUTPUT_DIR}" "${LOG_DIR}"
 
 if [[ ! -d "${WORK}/.git" ]]; then
   git clone --branch "${REPO_BRANCH}" --depth 1 "${REPO_URL}" "${WORK}"
 else
-  git -C "${WORK}" fetch --depth 1 origin "${REPO_BRANCH}"
-  git -C "${WORK}" checkout "${REPO_BRANCH}"
-  git -C "${WORK}" pull --ff-only origin "${REPO_BRANCH}" || true
+  git -C "${WORK}" fetch --depth 1 origin "${REPO_BRANCH}" || true
+  git -C "${WORK}" checkout "${REPO_BRANCH}" || true
+  git -C "${WORK}" reset --hard "origin/${REPO_BRANCH}" || true
 fi
 
 cd "${WORK}"
@@ -24,5 +27,16 @@ pip install --upgrade pip
 pip install -r requirements.txt
 pip install "huggingface_hub[cli]>=0.24.0"
 
-# Reuse the Docker entrypoint logic (expects this path).
-exec bash docker/entrypoint_logit_distill.sh
+# Keep container alive for SSH even if training exits; log to a file.
+set +e
+bash docker/entrypoint_logit_distill.sh 2>&1 | tee -a "${LOG_FILE}"
+train_status=${PIPESTATUS[0]}
+set -e
+echo "Training exited with code ${train_status}. Log: ${LOG_FILE}" | tee -a "${LOG_FILE}"
+
+# Prefer an interactive shell so RunPod SSH / console stay usable after training.
+if [[ -t 0 ]]; then
+  exec bash
+else
+  exec sleep infinity
+fi
