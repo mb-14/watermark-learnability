@@ -21,6 +21,8 @@
 #   ATTN_IMPLEMENTATION  sdpa | flash_attention_2 (default sdpa)
 #   TORCH_COMPILE    True/False (default False)
 #   MAX_STEPS        override training steps
+#   CLEANUP_HASH_KEYS  space-separated prior hash keys whose checkpoint-* dirs are
+#                      deleted before training to free network-volume space (default: 12997009)
 #   EXTRA_ARGS       extra CLI args appended to the train command
 set -euo pipefail
 
@@ -38,6 +40,7 @@ HUB_STRATEGY=${HUB_STRATEGY:-end}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
 TORCH_COMPILE=${TORCH_COMPILE:-False}
 HF_HUB_USER=${HF_HUB_USER:-mbakshi1094}
+CLEANUP_HASH_KEYS=${CLEANUP_HASH_KEYS:-12997009}
 
 # RunPod secrets are injected as RUNPOD_SECRET_<NAME>.
 HF_TOKEN="${HF_TOKEN:-${RUNPOD_SECRET_HF_TOKEN:-}}"
@@ -55,6 +58,36 @@ else
 fi
 
 mkdir -p "${OUTPUT_DIR}" "${HF_HOME}"
+
+echo "Workspace disk before cleanup:"
+df -h "${OUTPUT_DIR}" /workspace 2>/dev/null || df -h /workspace || true
+
+# Free space from prior hash-key runs (full FSDP checkpoints are ~40GB+ each).
+if [[ "${WATERMARK_TYPE}" == kgw* && -n "${CLEANUP_HASH_KEYS}" ]]; then
+  for old_hk in ${CLEANUP_HASH_KEYS}; do
+    if [[ "${old_hk}" == "${KGW_HASH_KEY}" ]]; then
+      continue
+    fi
+    old_out="${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${old_hk}"
+    if [[ -d "${old_out}" ]]; then
+      echo "Cleaning prior-run artifacts under ${old_out}"
+      shopt -s nullglob
+      for ckpt in "${old_out}"/checkpoint-*; do
+        echo "  rm -rf ${ckpt}"
+        rm -rf "${ckpt}"
+      done
+      shopt -u nullglob
+      # Drop leftover Hub/local full model files from the old run if present.
+      rm -f "${old_out}"/model.safetensors* "${old_out}"/pytorch_model* \
+        "${old_out}"/optimizer.pt "${old_out}"/scheduler.pt \
+        "${old_out}"/trainer_state.json "${old_out}"/rng_state*.pth 2>/dev/null || true
+      du -sh "${old_out}" 2>/dev/null || true
+    fi
+  done
+fi
+
+echo "Workspace disk after cleanup:"
+df -h /workspace || true
 
 if [[ -n "${HF_TOKEN}" ]]; then
   export HF_TOKEN
