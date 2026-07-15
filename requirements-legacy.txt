@@ -19,6 +19,7 @@ fsspec==2023.9.2
 numpy>=1.24,<2.0
 openai
 pyarrow>=12.0.0,<15.0.0
+safetensors
 scikit-learn
 scipy
 sentencepiece

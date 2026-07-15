@@ -34,6 +34,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from itertools import chain
+from pathlib import Path
 from typing import Optional, Union
 
 import datasets
@@ -163,6 +164,119 @@ def _load_config_legacy(model_name_or_path: Optional[str], config_name: Optional
         getattr(config, "rope_theta", rope_theta),
     )
     return config, True
+
+
+def _legacy_converted_weights_dir(model_name_or_path: str, cache_dir: Optional[str] = None) -> Path:
+    root = Path(cache_dir or os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    slug = model_name_or_path.strip("/").replace("/", "__")
+    return root / "legacy_pytorch_converted" / slug
+
+
+def _ensure_legacy_pytorch_weights(
+    model_name_or_path: str,
+    cache_dir: Optional[str] = None,
+    use_auth_token=None,
+    is_main_process: bool = True,
+) -> str:
+    """Materialize pytorch_model*.bin for safetensors-only Hub models (e.g. Mistral-7B-v0.3).
+
+    The paper-era transformers fork cannot load .safetensors weights.
+    """
+    import shutil
+    from huggingface_hub import snapshot_download
+    from safetensors.torch import load_file
+    from transformers.modeling_utils import shard_checkpoint
+
+    out_dir = _legacy_converted_weights_dir(model_name_or_path, cache_dir)
+    marker = out_dir / ".conversion_complete"
+    if marker.exists() and (list(out_dir.glob("pytorch_model*.bin")) or (out_dir / "pytorch_model.bin").exists()):
+        return str(out_dir)
+
+    if not is_main_process:
+        # Other ranks wait for rank0 conversion (filesystem sync on network volume).
+        for _ in range(3600):
+            if marker.exists():
+                return str(out_dir)
+            import time
+
+            time.sleep(2)
+        raise RuntimeError(f"Timed out waiting for safetensors→bin conversion at {out_dir}")
+
+    logger.warning(
+        "Legacy stack cannot load safetensors; converting %s → pytorch_model*.bin under %s",
+        model_name_or_path,
+        out_dir,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    snap_kwargs = {
+        "repo_id": model_name_or_path,
+        "cache_dir": cache_dir,
+        "local_files_only": False,
+    }
+    # huggingface-hub 0.16 uses use_auth_token
+    if use_auth_token:
+        snap_kwargs["use_auth_token"] = use_auth_token
+    snap = Path(
+        snapshot_download(
+            **snap_kwargs,
+            allow_patterns=[
+                "*.safetensors",
+                "*.json",
+                "tokenizer*",
+                "*.model",
+                "special_tokens_map.json",
+                "added_tokens.json",
+            ],
+        )
+    )
+
+    # Already has bins in the snapshot?
+    if list(snap.glob("pytorch_model*.bin")) or (snap / "pytorch_model.bin").exists():
+        return str(snap)
+
+    index_path = snap / "model.safetensors.index.json"
+    single = snap / "model.safetensors"
+    state = {}
+    if index_path.exists():
+        index = json.loads(index_path.read_text())
+        for shard_name in sorted(set(index["weight_map"].values())):
+            state.update(load_file(str(snap / shard_name), device="cpu"))
+    elif single.exists():
+        state = load_file(str(single), device="cpu")
+    else:
+        raise FileNotFoundError(f"No safetensors weights found under {snap}")
+
+    shards, index_json = shard_checkpoint(state, max_shard_size="10GB")
+    for shard_file, shard in shards.items():
+        torch.save(shard, out_dir / shard_file)
+    if index_json is not None:
+        (out_dir / "pytorch_model.bin.index.json").write_text(json.dumps(index_json, indent=2))
+
+    for name in (
+        "config.json",
+        "generation_config.json",
+        "tokenizer.model",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "added_tokens.json",
+    ):
+        src = snap / name
+        if src.exists():
+            shutil.copy2(src, out_dir / name)
+
+    # Help AutoConfig/Llama load without model_type=mistral in the copied config.
+    cfg_path = out_dir / "config.json"
+    if cfg_path.exists():
+        cfg = json.loads(cfg_path.read_text())
+        cfg["model_type"] = "llama"
+        cfg["architectures"] = ["LlamaForCausalLM"]
+        cfg_path.write_text(json.dumps(cfg, indent=2) + "\n")
+
+    marker.write_text("ok\n")
+    logger.info("Wrote legacy pytorch bins to %s", out_dir)
+    return str(out_dir)
 
 
 def _load_causal_lm_legacy(model_name_or_path: str, config, load_as_llama: bool, **from_pretrained_kwargs):
@@ -752,6 +866,17 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    load_path = model_args.model_name_or_path
+    if load_as_llama and model_args.model_name_or_path:
+        load_path = _ensure_legacy_pytorch_weights(
+            model_args.model_name_or_path,
+            cache_dir=model_args.cache_dir,
+            use_auth_token=True if model_args.use_auth_token else None,
+            is_main_process=training_args.local_rank in (-1, 0),
+        )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
     if model_args.model_name_or_path:
         torch_dtype = (
             model_args.torch_dtype
@@ -767,13 +892,13 @@ def main():
             low_cpu_mem_usage=model_args.low_cpu_mem_usage,
         )
         model = _load_causal_lm_legacy(
-            model_args.model_name_or_path,
+            load_path,
             config,
             load_as_llama,
             **from_pretrained_kwargs,
         )
         teacher_model = _load_causal_lm_legacy(
-            model_args.model_name_or_path,
+            load_path,
             config,
             load_as_llama,
             **from_pretrained_kwargs,
