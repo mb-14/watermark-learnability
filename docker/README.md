@@ -46,6 +46,8 @@ docker run --gpus all --shm-size=64g --rm \
 
 ## Push to Hugging Face after training
 
+With `PUSH_TO_HUB=true`, training finishes by calling the **`hf upload` CLI** (not Trainer’s native Hub/Xet push), with `HF_HUB_DISABLE_XET=1` by default. Checkpoints / `.git` are excluded. Legacy RunPod bootstrap installs the standalone `hf` CLI so it does not conflict with the pinned paper-era `huggingface-hub`.
+
 ```bash
 docker run --gpus all --shm-size=64g --rm \
   -e HF_TOKEN \

@@ -30,6 +30,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from itertools import chain
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import datasets
@@ -54,6 +55,8 @@ from transformers import (
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
+
+from watermarks.hf_cli_upload import upload_folder_via_hf_cli
 
 
 require_version("datasets>=3.0.0", "To fix: pip install -r requirements.txt")
@@ -276,6 +279,34 @@ class SamplingDistillTrainer(Trainer):
                 json.dump(watermark_config, f)
         except Exception as e:
             print(f"Failed to save watermark config file: {e}")
+
+    def push_to_hub(self, commit_message: Optional[str] = "End of training", blocking: bool = True, **kwargs):
+        """Push via ``hf upload`` CLI instead of Trainer/huggingface_hub native push."""
+        del blocking  # CLI upload is synchronous
+        url = None
+        if self.is_world_process_zero():
+            card_kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in ("commit_message", "blocking", "token", "revision")
+            }
+            try:
+                self.create_model_card(**card_kwargs)
+            except Exception as e:
+                logger.warning("create_model_card failed before Hub upload: %s", e)
+
+            repo_id = self.args.hub_model_id or Path(self.args.output_dir).name
+            private = bool(getattr(self.args, "hub_private_repo", False))
+            msg = commit_message or kwargs.get("commit_message") or "End of training"
+            url = upload_folder_via_hf_cli(
+                repo_id=repo_id,
+                local_dir=self.args.output_dir,
+                private=private,
+                commit_message=msg,
+            )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        return url
 
 
 def main():

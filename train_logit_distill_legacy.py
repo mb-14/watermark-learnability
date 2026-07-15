@@ -65,6 +65,7 @@ from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
 from watermarks.aar.aar_watermark import AarWatermark
+from watermarks.hf_cli_upload import upload_folder_via_hf_cli
 from watermarks.kgw.kgw_watermark import KGWWatermark
 from watermarks.kth.kth_watermark import KTHWatermark
 from watermarks.watermark_types import WatermarkType
@@ -531,6 +532,29 @@ class LogitsDistillTrainingArguments(TrainingArguments):
     )
 
 
+def _normalize_fsdp_optim_state_dict(osd):
+    """Convert scalar Adam state (e.g. step: int) to tensors for PyTorch 2.4+ FSDP.
+
+    Legacy transformers saves ``step`` as a Python int. ``FSDP.scatter_full_optim_state_dict``
+    then calls ``.cpu()`` on every state value and crashes with
+    ``AttributeError: 'int' object has no attribute 'cpu'``.
+    """
+    if not isinstance(osd, dict) or "state" not in osd:
+        return osd
+    for st in osd["state"].values():
+        if not isinstance(st, dict):
+            continue
+        for key, val in list(st.items()):
+            # bool is a subclass of int — leave it alone
+            if isinstance(val, bool):
+                continue
+            if isinstance(val, int):
+                st[key] = torch.tensor(val, dtype=torch.int64)
+            elif isinstance(val, float):
+                st[key] = torch.tensor(val, dtype=torch.float32)
+    return osd
+
+
 class WatermarkLogitsDistillTrainer(Trainer):
     def __init__(
         self,
@@ -549,6 +573,50 @@ class WatermarkLogitsDistillTrainer(Trainer):
             self.loss_fct = torch.nn.CrossEntropyLoss()
         else:
             self.loss_fct = torch.nn.KLDivLoss(reduction="batchmean", log_target=True)
+
+    def _load_optimizer_and_scheduler(self, checkpoint):
+        """Resume FSDP optim state after normalizing int/float Adam scalars."""
+        _orig_load = torch.load
+
+        def _load_and_normalize(*args, **kwargs):
+            obj = _orig_load(*args, **kwargs)
+            if isinstance(obj, dict) and "state" in obj and "param_groups" in obj:
+                obj = _normalize_fsdp_optim_state_dict(obj)
+            return obj
+
+        torch.load = _load_and_normalize
+        try:
+            return super()._load_optimizer_and_scheduler(checkpoint)
+        finally:
+            torch.load = _orig_load
+
+    def push_to_hub(self, commit_message=None, blocking=True, **kwargs):
+        """Push via ``hf upload`` CLI instead of Trainer/huggingface_hub native push."""
+        del blocking  # CLI upload is synchronous
+        url = None
+        if self.is_world_process_zero():
+            card_kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in ("commit_message", "blocking", "token", "revision")
+            }
+            try:
+                self.create_model_card(**card_kwargs)
+            except Exception as e:
+                logger.warning("create_model_card failed before Hub upload: %s", e)
+
+            repo_id = self.args.hub_model_id or Path(self.args.output_dir).name
+            private = bool(getattr(self.args, "hub_private_repo", False))
+            msg = commit_message or kwargs.get("commit_message") or "End of training"
+            url = upload_folder_via_hf_cli(
+                repo_id=repo_id,
+                local_dir=self.args.output_dir,
+                private=private,
+                commit_message=msg,
+            )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        return url
 
     def compute_loss(self, model, inputs, return_outputs=False):
         """

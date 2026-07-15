@@ -30,6 +30,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from itertools import chain
+from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import datasets
@@ -68,6 +69,7 @@ _hf_import_utils.check_torch_load_is_safe = _allow_torch_load_for_trusted_ckpt
 _hf_trainer.check_torch_load_is_safe = _allow_torch_load_for_trusted_ckpt
 
 from watermarks.aar.aar_watermark import AarWatermark
+from watermarks.hf_cli_upload import upload_folder_via_hf_cli
 from watermarks.kgw.kgw_watermark import KGWWatermark
 from watermarks.kth.kth_watermark import KTHWatermark
 from watermarks.watermark_types import WatermarkType
@@ -347,6 +349,34 @@ class WatermarkLogitsDistillTrainer(Trainer):
             self.loss_fct = torch.nn.CrossEntropyLoss()
         else:
             self.loss_fct = torch.nn.KLDivLoss(reduction="batchmean", log_target=True)
+
+    def push_to_hub(self, commit_message: Optional[str] = "End of training", blocking: bool = True, **kwargs):
+        """Push via ``hf upload`` CLI instead of Trainer/huggingface_hub native push."""
+        del blocking  # CLI upload is synchronous
+        url = None
+        if self.is_world_process_zero():
+            card_kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in ("commit_message", "blocking", "token", "revision")
+            }
+            try:
+                self.create_model_card(**card_kwargs)
+            except Exception as e:
+                logger.warning("create_model_card failed before Hub upload: %s", e)
+
+            repo_id = self.args.hub_model_id or Path(self.args.output_dir).name
+            private = bool(getattr(self.args, "hub_private_repo", False))
+            msg = commit_message or kwargs.get("commit_message") or "End of training"
+            url = upload_folder_via_hf_cli(
+                repo_id=repo_id,
+                local_dir=self.args.output_dir,
+                private=private,
+                commit_message=msg,
+            )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        return url
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """

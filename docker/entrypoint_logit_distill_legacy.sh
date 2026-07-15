@@ -20,10 +20,12 @@
 #   WANDB_API_KEY or RUNPOD_SECRET_WAND_API_KEY / RUNPOD_SECRET_WANDB_API_KEY
 #   HF_HUB_USER      default mbakshi1094
 #   PUSH_TO_HUB      true/false (default false)
+#                    When true, training ends with `hf upload` (not Trainer native push).
 #   HUB_MODEL_ID     optional; default
 #     ${HF_HUB_USER}/${MODEL_NAME_PREFIX}-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}-legacy
 #   HUB_PRIVATE_REPO true/false (default false)
 #   HUB_STRATEGY     end (default; every_save can flake on Hub)
+#   HF_HUB_DISABLE_XET  default 1 (safer large-file uploads via hf CLI)
 #   RESUME_FROM_CHECKPOINT  path or true
 #   MAX_STEPS        override training steps
 #   CLEANUP_HASH_KEYS  prior hash keys whose checkpoint-* dirs to delete
@@ -71,6 +73,9 @@ HF_TOKEN="${HF_TOKEN:-${RUNPOD_SECRET_HF_TOKEN:-}}"
 WANDB_API_KEY="${WANDB_API_KEY:-${RUNPOD_SECRET_WAND_API_KEY:-${RUNPOD_SECRET_WANDB_API_KEY:-}}}"
 
 export KGW_HASH_KEY NPROC_PER_NODE
+export PATH="${HOME}/.local/bin:${PATH}"
+# Avoid Xet stalling on multi-GB shard uploads (see watermarks/hf_cli_upload.py).
+export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}
 # RunPod H100 SXM / mixed NCCL stacks often fail NVLS multicast init.
 export NCCL_NVLS_ENABLE=${NCCL_NVLS_ENABLE:-0}
 if [[ -n "${WANDB_API_KEY}" ]]; then
@@ -164,14 +169,18 @@ if [[ "${PUSH_TO_HUB,,}" == "true" || "${PUSH_TO_HUB}" == "1" ]]; then
       HUB_MODEL_ID="${HF_HUB_USER}/${MODEL_SLUG}-logit-watermark-distill-${WATERMARK_TYPE}-legacy"
     fi
   fi
-  # Older transformers: --push_to_hub and related flags still work.
+  # push_to_hub flag enables end-of-run upload; Trainer.push_to_hub is overridden
+  # to shell out to `hf upload` (see watermarks/hf_cli_upload.py).
   extra+=(--push_to_hub True --hub_model_id "${HUB_MODEL_ID}" --hub_strategy "${HUB_STRATEGY}")
   if [[ "${HUB_PRIVATE_REPO,,}" == "true" || "${HUB_PRIVATE_REPO}" == "1" ]]; then
     extra+=(--hub_private_repo True)
   else
     extra+=(--hub_private_repo False)
   fi
-  echo "Hub push enabled: ${HUB_MODEL_ID} (strategy=${HUB_STRATEGY})"
+  if ! command -v hf >/dev/null 2>&1; then
+    echo "WARNING: hf CLI not found on PATH; Hub upload will fail. Install via https://hf.co/cli"
+  fi
+  echo "Hub push enabled via hf upload: ${HUB_MODEL_ID} (strategy=${HUB_STRATEGY}, HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET})"
 fi
 # shellcheck disable=SC2206
 if [[ -n "${EXTRA_ARGS:-}" ]]; then

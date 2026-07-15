@@ -27,6 +27,8 @@ else
 fi
 
 cd "${WORK}"
+export PATH="${HOME}/.local/bin:${PATH}"
+export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}
 pip install --upgrade pip
 pip install -r requirements.txt
 pip install "huggingface_hub[cli]>=0.24.0"

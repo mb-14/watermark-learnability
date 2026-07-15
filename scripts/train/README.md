@@ -18,7 +18,7 @@ Optional environment overrides:
 - `TORCH_COMPILE=True` — enable `torch.compile` via Hugging Face `TrainingArguments`.
 - `KGW_HASH_KEY=15485863` — KGW PRF salt (default `15485863`; included in the output dir name for KGW runs).
 - `NPROC_PER_NODE=4` — number of GPUs for `torchrun`.
-- `TRAIN_EXTRA_ARGS="--push_to_hub True --hub_model_id user/repo"` — extra CLI flags (Hub push, etc.).
+- `TRAIN_EXTRA_ARGS="--push_to_hub True --hub_model_id user/repo"` — extra CLI flags. Hub push uses the `hf upload` CLI (not Trainer native/Xet push).
 
 Modern flags already enabled in the script: `--torch_dtype bfloat16`, `--attn_implementation`, `--dataloader_num_workers 4`, `--dataloader_pin_memory True`, and `--fsdp_config` with `LlamaDecoderLayer` wrapping.
 

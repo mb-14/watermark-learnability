@@ -29,7 +29,17 @@ else
 fi
 
 cd "${WORK}"
-# Hub push needs git-lfs (legacy transformers/huggingface_hub Repository path).
+# Prefer standalone `hf` CLI for Hub uploads (Trainer native/Xet push is flaky on large shards).
+# Keep this separate from the pinned legacy huggingface-hub==0.16.4 used for training.
+export PATH="${HOME}/.local/bin:${PATH}"
+export HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}
+if ! command -v hf >/dev/null 2>&1; then
+  echo "Installing standalone Hugging Face CLI (hf)..."
+  curl -LsSf https://hf.co/cli/install.sh | bash -s
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+hf version || true
+# git-lfs still useful for base model downloads via older hub APIs.
 if ! command -v git-lfs >/dev/null 2>&1; then
   apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y git-lfs
   git lfs install
