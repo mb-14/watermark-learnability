@@ -12,13 +12,16 @@
 #   OUTPUT_DIR       default /workspace/out/
 #   MASTER_PORT      default 29500
 #   MODEL_NAME_OR_PATH  default meta-llama/Llama-2-7b-hf
+#                       (also supports mistralai/Mistral-7B-v0.3 — remapped to
+#                       Llama inside train_logit_distill_legacy.py)
+#   MODEL_NAME_PREFIX   override output/Hub slug (default derived from model path)
 #   NPROC_PER_NODE   default 4
 #   HF_TOKEN or RUNPOD_SECRET_HF_TOKEN
 #   WANDB_API_KEY or RUNPOD_SECRET_WAND_API_KEY / RUNPOD_SECRET_WANDB_API_KEY
 #   HF_HUB_USER      default mbakshi1094
 #   PUSH_TO_HUB      true/false (default false)
 #   HUB_MODEL_ID     optional; default
-#     ${HF_HUB_USER}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}-legacy
+#     ${HF_HUB_USER}/${MODEL_NAME_PREFIX}-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}-legacy
 #   HUB_PRIVATE_REPO true/false (default false)
 #   HUB_STRATEGY     end (default; every_save can flake on Hub)
 #   RESUME_FROM_CHECKPOINT  path or true
@@ -44,6 +47,25 @@ CLEANUP_HASH_KEYS=${CLEANUP_HASH_KEYS:-}
 # When true (default), delete modern-stack checkpoint-* / leftover weights for THIS
 # hash key too so a legacy retrain does not compete with ~40GB+ old FSDP ckpts.
 CLEANUP_MODERN_SAME_KEY=${CLEANUP_MODERN_SAME_KEY:-true}
+
+derive_model_slug() {
+  local path_lc
+  path_lc=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+  case "${path_lc}" in
+    *mistral*7b*|*mistral-7b*|*mistral_7b*)
+      echo "mistral-7b"
+      ;;
+    *llama-2-7b*|*llama2-7b*|*llama-2_7b*)
+      echo "llama-2-7b"
+      ;;
+    *)
+      basename "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[ _]/-/g; s/[^a-z0-9.-]+/-/g; s/-+/-/g; s/^-|-$//g'
+      ;;
+  esac
+}
+
+MODEL_SLUG=${MODEL_NAME_PREFIX:-$(derive_model_slug "${MODEL_NAME_OR_PATH}")}
+export MODEL_NAME_PREFIX="${MODEL_SLUG}"
 
 HF_TOKEN="${HF_TOKEN:-${RUNPOD_SECRET_HF_TOKEN:-}}"
 WANDB_API_KEY="${WANDB_API_KEY:-${RUNPOD_SECRET_WAND_API_KEY:-${RUNPOD_SECRET_WANDB_API_KEY:-}}}"
@@ -77,7 +99,11 @@ cleanup_run_dir() {
 if [[ "${WATERMARK_TYPE}" == kgw* ]]; then
   # Always free the modern-stack dir for this hash key before a legacy train.
   if [[ "${CLEANUP_MODERN_SAME_KEY,,}" == "true" || "${CLEANUP_MODERN_SAME_KEY}" == "1" ]]; then
-    cleanup_run_dir "${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}"
+    cleanup_run_dir "${OUTPUT_DIR%/}/${MODEL_SLUG}-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}"
+    # Also free old llama-named modern dirs when switching base models.
+    if [[ "${MODEL_SLUG}" != "llama-2-7b" ]]; then
+      cleanup_run_dir "${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}"
+    fi
   fi
   if [[ -n "${CLEANUP_HASH_KEYS}" ]]; then
     for old_hk in ${CLEANUP_HASH_KEYS}; do
@@ -85,7 +111,10 @@ if [[ "${WATERMARK_TYPE}" == kgw* ]]; then
         continue
       fi
       for suffix in "" "-legacy"; do
-        cleanup_run_dir "${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${old_hk}${suffix}"
+        cleanup_run_dir "${OUTPUT_DIR%/}/${MODEL_SLUG}-logit-watermark-distill-${WATERMARK_TYPE}-hk${old_hk}${suffix}"
+        if [[ "${MODEL_SLUG}" != "llama-2-7b" ]]; then
+          cleanup_run_dir "${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${old_hk}${suffix}"
+        fi
       done
     done
   fi
@@ -104,9 +133,9 @@ else
 fi
 
 if [[ "${WATERMARK_TYPE}" == kgw* ]]; then
-  MODEL_OUT_DIR="${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}-legacy"
+  MODEL_OUT_DIR="${OUTPUT_DIR%/}/${MODEL_SLUG}-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}-legacy"
 else
-  MODEL_OUT_DIR="${OUTPUT_DIR%/}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-legacy"
+  MODEL_OUT_DIR="${OUTPUT_DIR%/}/${MODEL_SLUG}-logit-watermark-distill-${WATERMARK_TYPE}-legacy"
 fi
 if [[ -d "${MODEL_OUT_DIR}" ]]; then
   shopt -s nullglob
@@ -130,9 +159,9 @@ fi
 if [[ "${PUSH_TO_HUB,,}" == "true" || "${PUSH_TO_HUB}" == "1" ]]; then
   if [[ -z "${HUB_MODEL_ID:-}" ]]; then
     if [[ "${WATERMARK_TYPE}" == kgw* ]]; then
-      HUB_MODEL_ID="${HF_HUB_USER}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}-legacy"
+      HUB_MODEL_ID="${HF_HUB_USER}/${MODEL_SLUG}-logit-watermark-distill-${WATERMARK_TYPE}-hk${KGW_HASH_KEY}-legacy"
     else
-      HUB_MODEL_ID="${HF_HUB_USER}/llama-2-7b-logit-watermark-distill-${WATERMARK_TYPE}-legacy"
+      HUB_MODEL_ID="${HF_HUB_USER}/${MODEL_SLUG}-logit-watermark-distill-${WATERMARK_TYPE}-legacy"
     fi
   fi
   # Older transformers: --push_to_hub and related flags still work.
@@ -151,7 +180,7 @@ fi
 
 export TRAIN_EXTRA_ARGS="${extra[*]:-}"
 
-echo "Starting LEGACY logit distill: watermark=${WATERMARK_TYPE} hash_key=${KGW_HASH_KEY} nproc=${NPROC_PER_NODE} push_to_hub=${PUSH_TO_HUB} out=${MODEL_OUT_DIR}"
+echo "Starting LEGACY logit distill: model=${MODEL_NAME_OR_PATH} slug=${MODEL_SLUG} watermark=${WATERMARK_TYPE} hash_key=${KGW_HASH_KEY} nproc=${NPROC_PER_NODE} push_to_hub=${PUSH_TO_HUB} out=${MODEL_OUT_DIR}"
 echo "Stack: transformers-watermark-learnability fork (~4.29.2) + accelerate 0.21 (image torch)"
 exec bash scripts/train/train_llama_logit_distill_legacy.sh \
   "${WATERMARK_TYPE}" \

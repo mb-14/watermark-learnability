@@ -139,11 +139,27 @@ docker run --gpus all --shm-size=64g --rm \
   watermark-logit-distill:legacy
 ```
 
+Mistral-7B-v0.3 on the legacy path (remapped to Llama inside the train script):
+
+```bash
+docker run --gpus all --shm-size=64g --rm \
+  -e HF_TOKEN \
+  -e WATERMARK_TYPE=kgw-k1-gamma0.25-delta2 \
+  -e KGW_HASH_KEY=12997009 \
+  -e MODEL_NAME_OR_PATH=mistralai/Mistral-7B-v0.3 \
+  -e PUSH_TO_HUB=true \
+  -e NPROC_PER_NODE=4 \
+  -e OUTPUT_DIR=/workspace/out/ \
+  -v "$PWD/out:/workspace/out" \
+  watermark-logit-distill:legacy
+```
+
 Defaults:
 
 - Launcher: `scripts/train/train_llama_logit_distill_legacy.sh`
 - Train script: `train_logit_distill_legacy.py` (pre-modernize FSDP / no SDPA)
-- Checkpoint dir / Hub id: `…-hk${KGW_HASH_KEY}-legacy`
+- Checkpoint dir / Hub id: `${MODEL_SLUG}-…-hk${KGW_HASH_KEY}-legacy`
+  (`MODEL_SLUG` is `llama-2-7b` or `mistral-7b` from `MODEL_NAME_OR_PATH`)
 
 Local (non-Docker) legacy install:
 

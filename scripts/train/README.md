@@ -29,6 +29,16 @@ For containerized / RunPod automation (hash-key sweeps + Hub upload), see [`dock
 `requirements-legacy.txt`, or build `Dockerfile.legacy` (`watermark-logit-distill:legacy`).
 Output dirs and Hub ids get a `-legacy` suffix. Same `KGW_HASH_KEY` env override applies.
 
+The paper fork has no native Mistral classes. For [`mistralai/Mistral-7B-v0.3`](https://huggingface.co/mistralai/Mistral-7B-v0.3), `train_logit_distill_legacy.py` remaps the config/weights to Llama (keeps GQA + `rope_theta=1e6`) and still FSDP-wraps `LlamaDecoderLayer`. Example:
+
+```bash
+MODEL_NAME_OR_PATH=mistralai/Mistral-7B-v0.3 \
+  bash scripts/train/train_llama_logit_distill_legacy.sh \
+  kgw-k1-gamma0.25-delta2 /workspace/out/ 29500 mistralai/Mistral-7B-v0.3
+```
+
+Output / Hub slug becomes `mistral-7b-logit-watermark-distill-…-legacy` (override with `MODEL_NAME_PREFIX`).
+
 ### Sampling-based watermark distillation
 
 To perform sampling-based watermark distillation, you can either use the training data we have uploaded to Hugging Face (listed in the top-level [README.md](/README.md#training-data-for-sampling-based-watermark-distillation)) or generate the training data yourself. `generate_sampling_distill_train_data.sh` generates watermarked samples from the teacher Llama 2 7B to use as training data. We used 1 NVIDIA A100 80GB GPU. The script is run from the top-level directory as

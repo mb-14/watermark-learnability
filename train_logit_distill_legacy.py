@@ -56,6 +56,7 @@ from transformers import (
     is_torch_tpu_available,
     set_seed,
 )
+from transformers.configuration_utils import PretrainedConfig
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_pt_utils import get_module_class_from_name
 from transformers.trainer_utils import FSDPOption, get_last_checkpoint
@@ -77,6 +78,107 @@ MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _config_dict_is_mistral(config_dict: dict) -> bool:
+    if config_dict.get("model_type") == "mistral":
+        return True
+    architectures = config_dict.get("architectures") or []
+    return any("Mistral" in str(a) for a in architectures)
+
+
+def _patch_llama_rope_theta() -> None:
+    """Honor config.rope_theta when the paper-era Llama stack ignores it.
+
+    Mistral-7B-v0.3 uses rope_theta=1e6; without this, remapping mistral→llama
+    silently trains with the default base=10000 RoPE and diverges from the
+    pretrained weights.
+    """
+    from transformers.models.llama import modeling_llama as llama_modeling
+
+    if getattr(llama_modeling.LlamaAttention, "_rope_theta_patched", False):
+        return
+
+    def _init_rope(self):
+        base = float(getattr(self.config, "rope_theta", 10000.0) or 10000.0)
+        if self.config.rope_scaling is None:
+            self.rotary_emb = llama_modeling.LlamaRotaryEmbedding(
+                self.head_dim,
+                max_position_embeddings=self.max_position_embeddings,
+                base=base,
+            )
+        else:
+            scaling_type = self.config.rope_scaling["type"]
+            scaling_factor = self.config.rope_scaling["factor"]
+            if scaling_type == "linear":
+                self.rotary_emb = llama_modeling.LlamaLinearScalingRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                    base=base,
+                )
+            elif scaling_type == "dynamic":
+                self.rotary_emb = llama_modeling.LlamaDynamicNTKScalingRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                    base=base,
+                )
+            else:
+                raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
+
+    llama_modeling.LlamaAttention._init_rope = _init_rope
+    llama_modeling.LlamaAttention._rope_theta_patched = True
+    logger.info("Patched LlamaAttention._init_rope to honor config.rope_theta")
+
+
+def _load_config_legacy(model_name_or_path: Optional[str], config_name: Optional[str], config_kwargs: dict):
+    """Load AutoConfig, remapping Mistral → Llama on the paper-era fork (no Mistral)."""
+    from transformers import LlamaConfig
+
+    path = config_name or model_name_or_path
+    if path is None:
+        return None, False
+
+    config_dict, _ = PretrainedConfig.get_config_dict(path, **config_kwargs)
+    if not _config_dict_is_mistral(config_dict):
+        return AutoConfig.from_pretrained(path, **config_kwargs), False
+
+    _patch_llama_rope_theta()
+    remapped = dict(config_dict)
+    rope_theta = remapped.get("rope_theta", 10000.0)
+    remapped["model_type"] = "llama"
+    remapped["architectures"] = ["LlamaForCausalLM"]
+    # Unused by Llama; drop so from_dict does not warn loudly on unknowns.
+    remapped.pop("sliding_window", None)
+    remapped.pop("attention_dropout", None)
+    config = LlamaConfig.from_dict(remapped)
+    # from_dict may drop non-signature attrs depending on version; keep RoPE base.
+    if not hasattr(config, "rope_theta") or config.rope_theta is None:
+        config.rope_theta = rope_theta
+    logger.warning(
+        "Legacy transformers fork has no Mistral classes; loading %s as Llama "
+        "(FSDP wrap LlamaDecoderLayer, rope_theta=%s).",
+        path,
+        getattr(config, "rope_theta", rope_theta),
+    )
+    return config, True
+
+
+def _load_causal_lm_legacy(model_name_or_path: str, config, load_as_llama: bool, **from_pretrained_kwargs):
+    if load_as_llama:
+        from transformers import LlamaForCausalLM
+
+        return LlamaForCausalLM.from_pretrained(
+            model_name_or_path,
+            config=config,
+            **from_pretrained_kwargs,
+        )
+    return AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        config=config,
+        **from_pretrained_kwargs,
+    )
 
 
 @dataclass
@@ -606,10 +708,13 @@ def main():
         "revision": model_args.model_revision,
         "use_auth_token": True if model_args.use_auth_token else None,
     }
-    if model_args.config_name:
-        config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
-    elif model_args.model_name_or_path:
-        config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+    load_as_llama = False
+    if model_args.config_name or model_args.model_name_or_path:
+        config, load_as_llama = _load_config_legacy(
+            model_args.model_name_or_path,
+            model_args.config_name,
+            config_kwargs,
+        )
     else:
         config = CONFIG_MAPPING[model_args.model_type]()
         logger.warning("You are instantiating a new config instance from scratch.")
@@ -634,35 +739,44 @@ def main():
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     if model_args.model_name_or_path:
         torch_dtype = (
             model_args.torch_dtype
             if model_args.torch_dtype in ["auto", None]
             else getattr(torch, model_args.torch_dtype)
         )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
+        from_pretrained_kwargs = dict(
             from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
             cache_dir=model_args.cache_dir,
             revision=model_args.model_revision,
             use_auth_token=True if model_args.use_auth_token else None,
             torch_dtype=torch_dtype,
             low_cpu_mem_usage=model_args.low_cpu_mem_usage,
         )
-        teacher_model = AutoModelForCausalLM.from_pretrained(
+        model = _load_causal_lm_legacy(
             model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-            torch_dtype=torch_dtype,
-            low_cpu_mem_usage=model_args.low_cpu_mem_usage,
+            config,
+            load_as_llama,
+            **from_pretrained_kwargs,
+        )
+        teacher_model = _load_causal_lm_legacy(
+            model_args.model_name_or_path,
+            config,
+            load_as_llama,
+            **from_pretrained_kwargs,
         )
     else:
-        model = AutoModelForCausalLM.from_config(config)
-        teacher_model = AutoModelForCausalLM.from_config(config)
+        if load_as_llama:
+            from transformers import LlamaForCausalLM
+
+            model = LlamaForCausalLM.from_config(config)
+            teacher_model = LlamaForCausalLM.from_config(config)
+        else:
+            model = AutoModelForCausalLM.from_config(config)
+            teacher_model = AutoModelForCausalLM.from_config(config)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
 
@@ -671,6 +785,7 @@ def main():
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
+        teacher_model.resize_token_embeddings(len(tokenizer))
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
