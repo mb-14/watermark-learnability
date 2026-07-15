@@ -723,9 +723,19 @@ def main():
             config.update_from_string(model_args.config_overrides)
             logger.info(f"New config: {config}")
 
+    # Mistral-7B-v0.3 tokenizer.json needs a newer `tokenizers` than the paper-era
+    # stack; force the slow SentencePiece path (tokenizer.model) instead.
+    use_fast = model_args.use_fast_tokenizer
+    if load_as_llama and use_fast:
+        logger.warning(
+            "Disabling fast tokenizer for remapped Mistral checkpoint "
+            "(legacy tokenizers cannot parse its tokenizer.json)."
+        )
+        use_fast = False
+
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
-        "use_fast": model_args.use_fast_tokenizer,
+        "use_fast": use_fast,
         "revision": model_args.model_revision,
         "use_auth_token": True if model_args.use_auth_token else None,
     }
